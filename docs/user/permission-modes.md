@@ -44,5 +44,10 @@ with prompting enabled and a restricted workspace while **Full access** disables
 labels above describe what you get; the exact per-provider translation is internal and may
 change.
 
+Command Code runs headlessly, so T3 Code cannot relay its interactive permission prompts yet.
+**Supervised** uses Command Code's fail-closed `dont-ask` mode, **Auto-accept edits** and **Auto**
+use `auto-accept`, and **Full access** uses `--yolo`. Plan interaction mode uses Command Code's
+read-only `--plan` mode. See [Command Code](./providers-command-code.md) for the current limits.
+
 Mobile offers the same four modes. It labels the first one **Approve actions** rather than
 **Supervised**.

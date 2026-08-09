@@ -865,6 +865,34 @@ export function makeCommandCodeAdapter(
           });
         } else if (resultFrame) {
           yield* handleResult(ctx, turn, resultFrame, resumeReady);
+        } else if (exitCode === 0) {
+          // The CLI ran to completion (exit 0) without emitting a result frame
+          // — e.g. a print-mode prompt that needed no model turn, or a turn
+          // whose stream closed before the final frame flushed. Exit 0 is the
+          // CLI's success signal, so this is a completed turn, not a failure.
+          yield* completeReasoning(ctx, turn);
+          yield* completeAssistant(ctx, turn);
+          const sessionId = ctx.resumeSessionId;
+          if (sessionId === undefined) {
+            // No session id was ever reported (no run_start). Report the turn
+            // as failed so sendTurn does not return a bogus resume cursor.
+            yield* Deferred.fail(
+              resumeReady,
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                detail: "Command Code exited without reporting a session id.",
+              }),
+            ).pipe(Effect.ignore);
+          } else {
+            yield* Deferred.succeed(resumeReady, sessionId).pipe(Effect.ignore);
+          }
+          yield* settleTurnState(ctx, turn);
+          yield* publish({
+            type: "turn.completed",
+            ...(yield* base(ctx, turn.turnId)),
+            payload: { state: "completed" },
+          });
         } else {
           const detail = stderrText.trim() || `Command Code exited with code ${exitCode}.`;
           yield* Deferred.fail(

@@ -482,6 +482,107 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
+  it.effect("completes the turn when the CLI exits 0 without a result frame", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-exit0-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-1"}}\'',
+            // No result frame: the process exits 0 after the event stream.
+            "exit 0",
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-exit0");
+        const terminalFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "start" })
+          .pipe(Effect.exit, Effect.forkChild);
+
+        const terminal = yield* Fiber.join(terminalFiber);
+        yield* Effect.yieldNow;
+        expect(turnFiber.pollUnsafe()).toBeDefined();
+        expect(Option.getOrUndefined(terminal)).toMatchObject({
+          payload: { state: "completed" },
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails the turn when the CLI exits nonzero without a result frame", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-exit1-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-1"}}\'',
+            "exit 1",
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-exit1");
+        const terminalFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "start" })
+          .pipe(Effect.exit, Effect.forkChild);
+
+        const terminal = yield* Fiber.join(terminalFiber);
+        yield* Effect.yieldNow;
+        expect(turnFiber.pollUnsafe()).toBeDefined();
+        expect(Option.getOrUndefined(terminal)).toMatchObject({
+          payload: { state: "failed", errorMessage: "Command Code exited with code 1." },
+        });
+      }),
+    ),
+  );
+
   it.effect("rejects attachments, steering, approvals, and rollback explicitly", () =>
     Effect.scoped(
       Effect.gen(function* () {

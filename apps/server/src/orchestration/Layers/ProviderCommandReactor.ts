@@ -338,6 +338,14 @@ const make = Effect.gen(function* () {
 
   const threadModelSelections = new Map<string, ModelSelection>();
 
+  // Serializes turn sends per thread. A turn-start that arrives while a send
+  // is already in flight for the same thread is chained after it instead of
+  // racing it. Providers that cannot steer a running turn (Command Code
+  // headless) would otherwise reject the second send as mid-turn steering;
+  // queueing here gives every provider the same "your message will run next"
+  // behavior without per-adapter changes.
+  const turnSendTailByThread = new Map<string, Effect.Effect<void>>();
+
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
     readonly kind:
@@ -1179,9 +1187,30 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
+    const threadKey = event.payload.threadId;
+    const sendTurnEffect = providerService
       .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.asVoid);
+
+    const previousTail = turnSendTailByThread.get(threadKey);
+    const nextTail =
+      previousTail === undefined
+        ? sendTurnEffect
+        : previousTail.pipe(Effect.flatMap(() => sendTurnEffect));
+    turnSendTailByThread.set(threadKey, nextTail);
+    // The tail must be cleared once the whole chain settles, or the next
+    // turn-start would wait on a dead chain. Clearing under a single
+    // continuation keeps the map bounded to threads with an active chain.
+    yield* nextTail.pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (turnSendTailByThread.get(threadKey) === nextTail) {
+            turnSendTailByThread.delete(threadKey);
+          }
+        }),
+      ),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

@@ -1175,7 +1175,6 @@ export function makeCommandCodeAdapter(
             ctx.turnStarting = false;
           }),
       );
-
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
       threadId,
       turnId,

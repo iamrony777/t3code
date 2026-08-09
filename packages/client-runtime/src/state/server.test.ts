@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
@@ -36,6 +37,7 @@ import {
   matchesServerUpdateReadyEvent,
   nudgeReconnectDuringUpdateRestart,
   projectServerWelcome,
+  providerGlobalOptionMutationSingleFlightKey,
   resolveServerConfigValue,
   resolveServerUpdateProgressResult,
   serverUpdateStateForProgressEvent,
@@ -64,6 +66,35 @@ const TARGET = new PrimaryConnectionTarget({
   label: "Test environment",
   httpBaseUrl: "https://environment.example.test",
   wsBaseUrl: "wss://environment.example.test",
+});
+
+describe("provider global option mutation concurrency", () => {
+  it("coalesces only identical environment, instance, option, and value requests", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const instanceId = ProviderInstanceId.make("commandcode-personal");
+    const key = (overrides?: {
+      readonly environmentId?: EnvironmentId;
+      readonly instanceId?: ProviderInstanceId;
+      readonly optionId?: string;
+      readonly value?: string | boolean;
+    }) =>
+      providerGlobalOptionMutationSingleFlightKey({
+        environmentId: overrides?.environmentId ?? environmentId,
+        input: {
+          instanceId: overrides?.instanceId ?? instanceId,
+          optionId: overrides?.optionId ?? "compact",
+          value: overrides?.value ?? true,
+        },
+      });
+
+    const identical = key();
+    expect(key()).toBe(identical);
+    expect(key({ environmentId: EnvironmentId.make("environment-2") })).not.toBe(identical);
+    expect(key({ instanceId: ProviderInstanceId.make("commandcode-work") })).not.toBe(identical);
+    expect(key({ optionId: "taste" })).not.toBe(identical);
+    expect(key({ value: false })).not.toBe(identical);
+    expect(key({ value: "true" })).not.toBe(identical);
+  });
 });
 
 function session(client: WsRpcProtocolClient): RpcSession {

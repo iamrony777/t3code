@@ -30,6 +30,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires orchestration operate scope for provider global option mutations", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverSetProviderGlobalOption)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

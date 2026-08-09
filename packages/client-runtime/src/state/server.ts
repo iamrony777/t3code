@@ -4,6 +4,7 @@ import {
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
   type ServerLifecycleStreamReadyEvent,
+  type ServerProviderGlobalOptionSetInput,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
   WS_METHODS,
@@ -63,6 +64,18 @@ export type ServerUpdateState =
 export interface ServerUpdateTarget {
   readonly environmentId: EnvironmentId;
   readonly input: EnvironmentRpcInput<typeof WS_METHODS.serverUpdateServer>;
+}
+
+export function providerGlobalOptionMutationSingleFlightKey(target: {
+  readonly environmentId: EnvironmentId;
+  readonly input: ServerProviderGlobalOptionSetInput;
+}): string {
+  return JSON.stringify([
+    target.environmentId,
+    target.input.instanceId,
+    target.input.optionId,
+    target.input.value,
+  ]);
 }
 
 const IDLE_SERVER_UPDATE_STATE: ServerUpdateState = { status: "idle" };
@@ -729,6 +742,14 @@ export function createServerEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
+      },
+    }),
+    setProviderGlobalOption: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:set-provider-global-option",
+      tag: WS_METHODS.serverSetProviderGlobalOption,
+      concurrency: {
+        mode: "singleFlight",
+        key: providerGlobalOptionMutationSingleFlightKey,
       },
     }),
     updateProvider: createEnvironmentRpcCommand(runtime, {

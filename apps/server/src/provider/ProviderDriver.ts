@@ -25,9 +25,10 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import type * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -52,6 +53,19 @@ export interface ProviderDriverMetadata {
   readonly supportsMultipleInstances?: boolean;
 }
 
+export interface ProviderGlobalOptionMutation {
+  readonly optionId: ServerProviderGlobalOptionSetInput["optionId"];
+  readonly value: string | boolean;
+}
+
+export class ProviderGlobalOptionMutationError extends Schema.TaggedErrorClass<ProviderGlobalOptionMutationError>()(
+  "ProviderGlobalOptionMutationError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 /**
  * One materialized provider instance. Held by the registry, looked up by
  * `instanceId`, torn down by closing the scope it was created in.
@@ -71,6 +85,9 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  readonly setGlobalOption?: (
+    mutation: ProviderGlobalOptionMutation,
+  ) => Effect.Effect<void, ProviderGlobalOptionMutationError>;
 }
 
 export interface ProviderContinuationIdentity {

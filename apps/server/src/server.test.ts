@@ -113,6 +113,11 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "./provider/Services/ProviderInstanceRegistry.ts";
+import {
+  ProviderGlobalOptionMutationError,
+  type ProviderInstance,
+} from "./provider/ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -385,6 +390,9 @@ const buildAppUnderTest = (options?: {
   layers?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
+    providerInstanceRegistry?: Partial<
+      ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]
+    >;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
@@ -626,18 +634,28 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-          refresh: () => Effect.succeed([]),
-          refreshInstance: () => Effect.succeed([]),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-            Effect.succeed(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-            ),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.empty,
-          ...options?.layers?.providerRegistry,
-        }),
+        Layer.mergeAll(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+            ...options?.layers?.providerRegistry,
+          }),
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: () => Effect.sync((): ProviderInstance | undefined => undefined),
+            listInstances: Effect.succeed([]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            ...options?.layers?.providerInstanceRegistry,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ServerSettings.ServerSettingsService)({
@@ -4434,6 +4452,166 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.deepEqual(response.issues, []);
       assert.deepEqual(response.keybindings, [resolved]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes provider global option mutations by instance id", () =>
+    Effect.gen(function* () {
+      const targetId = ProviderInstanceId.make("commandcode_personal");
+      const otherId = ProviderInstanceId.make("commandcode_work");
+      const targetMutations: Array<{
+        readonly optionId: string;
+        readonly value: string | boolean;
+      }> = [];
+      const otherMutations: Array<{ readonly optionId: string; readonly value: string | boolean }> =
+        [];
+      const refreshedInstanceIds: Array<ProviderInstanceId> = [];
+      const targetInstance = {
+        instanceId: targetId,
+        setGlobalOption: (mutation) =>
+          Effect.sync(() => {
+            targetMutations.push(mutation);
+          }),
+      } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
+      const otherInstance = {
+        instanceId: otherId,
+        setGlobalOption: (mutation) =>
+          Effect.sync(() => {
+            otherMutations.push(mutation);
+          }),
+      } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
+      const refreshedProvider = {
+        instanceId: targetId,
+        driver: ProviderDriverKind.make("commandcode"),
+        enabled: true,
+        installed: true,
+        version: "1.0.0",
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2026-08-09T00:00:00.000Z",
+        models: [],
+        globalOptions: [],
+        slashCommands: [],
+        skills: [],
+      } as const;
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerInstanceRegistry: {
+            getInstance: (instanceId) =>
+              Effect.succeed(
+                instanceId === targetId
+                  ? (targetInstance as unknown as ProviderInstance)
+                  : instanceId === otherId
+                    ? (otherInstance as unknown as ProviderInstance)
+                    : undefined,
+              ),
+          },
+          providerRegistry: {
+            refreshInstance: (instanceId) =>
+              Effect.sync(() => {
+                refreshedInstanceIds.push(instanceId);
+                return [refreshedProvider];
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverSetProviderGlobalOption]({
+            instanceId: targetId,
+            optionId: "reasoning-effort",
+            value: "high",
+          }),
+        ),
+      );
+
+      assert.deepEqual(targetMutations, [{ optionId: "reasoning-effort", value: "high" }]);
+      assert.deepEqual(otherMutations, []);
+      assert.deepEqual(refreshedInstanceIds, [targetId]);
+      assert.deepEqual(response.providers, [refreshedProvider]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns typed errors for unavailable provider global option mutations", () =>
+    Effect.gen(function* () {
+      const missingId = ProviderInstanceId.make("missing_provider");
+      const unsupportedId = ProviderInstanceId.make("unsupported_provider");
+      const failingId = ProviderInstanceId.make("failing_provider");
+      const unsupportedInstance = { instanceId: unsupportedId } as ProviderInstance;
+      const failingInstance = {
+        instanceId: failingId,
+        setGlobalOption: () =>
+          Effect.fail(new ProviderGlobalOptionMutationError({ message: "native mutation failed" })),
+      } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerInstanceRegistry: {
+            getInstance: (instanceId) =>
+              Effect.succeed(
+                instanceId === unsupportedId
+                  ? unsupportedInstance
+                  : instanceId === failingId
+                    ? (failingInstance as unknown as ProviderInstance)
+                    : undefined,
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const results = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all({
+            missing: client[WS_METHODS.serverSetProviderGlobalOption]({
+              instanceId: missingId,
+              optionId: "model",
+              value: "fast",
+            }).pipe(Effect.result),
+            unsupported: client[WS_METHODS.serverSetProviderGlobalOption]({
+              instanceId: unsupportedId,
+              optionId: "model",
+              value: "fast",
+            }).pipe(Effect.result),
+            failing: client[WS_METHODS.serverSetProviderGlobalOption]({
+              instanceId: failingId,
+              optionId: "model",
+              value: "fast",
+            }).pipe(Effect.result),
+          }),
+        ),
+      );
+
+      if (
+        results.missing._tag !== "Failure" ||
+        results.missing.failure._tag !== "ServerProviderGlobalOptionSetError"
+      ) {
+        assert.fail("Expected a ServerProviderGlobalOptionSetError for the missing instance");
+      }
+      if (
+        results.unsupported._tag !== "Failure" ||
+        results.unsupported.failure._tag !== "ServerProviderGlobalOptionSetError"
+      ) {
+        assert.fail("Expected a ServerProviderGlobalOptionSetError for the unsupported instance");
+      }
+      if (
+        results.failing._tag !== "Failure" ||
+        results.failing.failure._tag !== "ServerProviderGlobalOptionSetError"
+      ) {
+        assert.fail("Expected a ServerProviderGlobalOptionSetError for the failed mutation");
+      }
+      assert.equal(results.missing.failure.optionId, "model");
+      assert.equal(results.missing.failure.instanceId, missingId);
+      assert.include(results.missing.failure.message, "was not found");
+      assert.equal(results.unsupported.failure.optionId, "model");
+      assert.equal(results.unsupported.failure.instanceId, unsupportedId);
+      assert.include(results.unsupported.failure.message, "does not support");
+      assert.equal(results.failing.failure.optionId, "model");
+      assert.equal(results.failing.failure.instanceId, failingId);
+      assert.include(results.failing.failure.message, "native mutation failed");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

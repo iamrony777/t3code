@@ -43,6 +43,7 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
+  ServerProviderGlobalOptionSetError,
   type ServerSelfUpdateProgressEvent,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -79,6 +80,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "./provider/Services/ProviderInstanceRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -368,6 +370,7 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerInstanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1443,6 +1446,47 @@ const makeWsRpcLayer = (
               ? providerRegistry.refreshInstance(input.instanceId)
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSetProviderGlobalOption]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSetProviderGlobalOption,
+            Effect.gen(function* () {
+              const instance = yield* providerInstanceRegistry.getInstance(input.instanceId);
+              if (instance === undefined) {
+                return yield* new ServerProviderGlobalOptionSetError({
+                  instanceId: input.instanceId,
+                  optionId: input.optionId,
+                  message: `Provider instance '${input.instanceId}' was not found.`,
+                });
+              }
+              if (instance.setGlobalOption === undefined) {
+                return yield* new ServerProviderGlobalOptionSetError({
+                  instanceId: input.instanceId,
+                  optionId: input.optionId,
+                  message: `Provider instance '${input.instanceId}' does not support global option mutations.`,
+                });
+              }
+
+              yield* instance
+                .setGlobalOption({
+                  optionId: input.optionId,
+                  value: input.value,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerProviderGlobalOptionSetError({
+                        instanceId: input.instanceId,
+                        optionId: input.optionId,
+                        message: `Failed to set provider global option: ${cause.message}`,
+                      }),
+                  ),
+                );
+
+              const providers = yield* providerRegistry.refreshInstance(input.instanceId);
+              return { providers };
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>

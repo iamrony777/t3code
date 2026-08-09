@@ -1,20 +1,33 @@
 import { CommandCodeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { collectUint8StreamText } from "../../stream/collectUint8StreamText.ts";
 import { makeCommandCodeTextGeneration } from "../../textGeneration/CommandCodeTextGeneration.ts";
+import {
+  createCommandCodeCatalogController,
+  type CommandCodeEffortProbeInput,
+} from "../commandCodeCatalog.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCommandCodeAdapter } from "../Layers/CommandCodeAdapter.ts";
 import {
   buildInitialCommandCodeProviderSnapshot,
-  checkCommandCodeProviderStatus,
+  type CommandCodeCatalogSeed,
+  enrichCommandCodeProviderSnapshot,
+  probeCommandCodeProviderStatus,
 } from "../Layers/CommandCodeProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -51,7 +64,92 @@ export type CommandCodeDriverEnv =
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | Path.Path
+  | ServerConfig
   | ServerSettingsService;
+
+class CommandCodeCatalogFetchError extends Data.TaggedError("CommandCodeCatalogFetchError")<{
+  readonly detail: string;
+}> {}
+
+const PROBE_FORCE_KILL_AFTER = "1 second";
+
+export const makeCommandCodeEffortProbeCommand = Effect.fn("makeCommandCodeEffortProbeCommand")(
+  function* (input: CommandCodeEffortProbeInput, environment: NodeJS.ProcessEnv) {
+    const resolved = yield* resolveSpawnCommand(input.executable, input.args, {
+      env: environment,
+    });
+    return ChildProcess.make(resolved.command, resolved.args, {
+      env: environment,
+      shell: resolved.shell,
+      stdin: "ignore",
+      forceKillAfter: PROBE_FORCE_KILL_AFTER,
+    });
+  },
+);
+
+export const makeCommandCodeCatalogControllerForProvider = Effect.fn(
+  "makeCommandCodeCatalogControllerForProvider",
+)(function* (environment: NodeJS.ProcessEnv) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const httpClient = yield* HttpClient.HttpClient;
+  const serverConfig = yield* ServerConfig;
+
+  return yield* createCommandCodeCatalogController<
+    PlatformError.PlatformError | HttpClientError.HttpClientError | CommandCodeCatalogFetchError
+  >({
+    providerStatusCacheDir: serverConfig.providerStatusCacheDir,
+    joinPath: path.join,
+    readFile: fs.readFileString,
+    writeFileAtomically: (filePath, contents) =>
+      writeFileStringAtomically({ filePath, contents }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      ),
+    fetchApiDocument: Effect.fn("CommandCodeCatalog.fetchApiDocument")(function* (input) {
+      const response = yield* httpClient.execute(HttpClientRequest.get(input.url));
+      if (response.status < 200 || response.status >= 300) {
+        return yield* new CommandCodeCatalogFetchError({
+          detail: `Command Code catalog API returned ${response.status}`,
+        });
+      }
+      const contentLength = Number(response.headers["content-length"]);
+      if (Number.isFinite(contentLength) && contentLength > input.maxBodyBytes) {
+        return yield* new CommandCodeCatalogFetchError({
+          detail: "Command Code catalog API response is too large",
+        });
+      }
+      const collected = yield* collectUint8StreamText({
+        stream: response.stream,
+        maxBytes: input.maxBodyBytes + 1,
+      });
+      if (collected.bytes > input.maxBodyBytes || collected.truncated) {
+        return yield* new CommandCodeCatalogFetchError({
+          detail: "Command Code catalog API response is too large",
+        });
+      }
+      return collected.text;
+    }),
+    probeEffort: Effect.fn("CommandCodeCatalog.probeEffort")(function* (input) {
+      const command = yield* makeCommandCodeEffortProbeCommand(input, environment);
+      const child = yield* spawner.spawn(command);
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectUint8StreamText({ stream: child.stdout, maxBytes: input.maxStdoutBytes }),
+          collectUint8StreamText({ stream: child.stderr, maxBytes: input.maxStderrBytes }),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      );
+      return {
+        exitCode: Number(exitCode),
+        stdout: stdout.text,
+        stderr: stderr.text,
+      };
+    }, Effect.scoped),
+  });
+});
 
 const withInstanceIdentity =
   (input: {
@@ -80,7 +178,9 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
+      const path = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
@@ -94,6 +194,8 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies CommandCodeSettings;
+      const catalogController = yield* makeCommandCodeCatalogControllerForProvider(processEnv);
+      const catalogSeedRef = yield* Ref.make<CommandCodeCatalogSeed | undefined>(undefined);
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
@@ -104,9 +206,16 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         environment: processEnv,
       });
       const textGeneration = yield* makeCommandCodeTextGeneration(effectiveConfig, processEnv);
-      const checkProvider = checkCommandCodeProviderStatus(effectiveConfig, processEnv).pipe(
-        Effect.map(stampIdentity),
+      const checkProvider = probeCommandCodeProviderStatus(
+        effectiveConfig,
+        instanceId,
+        processEnv,
+      ).pipe(
+        Effect.tap((result) => Ref.set(catalogSeedRef, result.catalogSeed)),
+        Effect.map((result) => stampIdentity(result.snapshot)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<
@@ -121,13 +230,39 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
             Effect.map(stampIdentity),
           ),
         checkProvider,
-        enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-          }).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap(publishSnapshot),
-          ),
+        enrichSnapshot: ({ settings, snapshot, getSnapshot, publishSnapshot }) =>
+          Effect.gen(function* () {
+            const seed = yield* Ref.get(catalogSeedRef);
+            if (seed !== undefined) {
+              yield* enrichCommandCodeProviderSnapshot({
+                controller: catalogController,
+                settings: settings.provider,
+                snapshot,
+                seed,
+                getSnapshot,
+                enrichAdvisory: (currentSnapshot) =>
+                  enrichProviderSnapshotWithVersionAdvisory(
+                    currentSnapshot,
+                    maintenanceCapabilities,
+                    {
+                      enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+                    },
+                  ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
+                publishSnapshot: (nextSnapshot) =>
+                  publishSnapshot({ ...snapshot, ...nextSnapshot }),
+              });
+              return;
+            }
+            const currentSnapshot = yield* getSnapshot;
+            const advised = yield* enrichProviderSnapshotWithVersionAdvisory(
+              currentSnapshot,
+              maintenanceCapabilities,
+              {
+                enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+              },
+            ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+            yield* publishSnapshot(advised);
+          }),
       }).pipe(
         Effect.mapError(
           (cause) =>

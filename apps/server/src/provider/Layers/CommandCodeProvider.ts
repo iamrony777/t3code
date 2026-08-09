@@ -1,19 +1,28 @@
 import {
   type CommandCodeSettings,
   type ModelCapabilities,
+  ProviderInstanceId,
   ProviderDriverKind,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { parseCommandCodeModels, parseCommandCodeStatus } from "../commandCodeCli.ts";
+import type { CommandCodeCatalogIdentity, CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
 import {
+  type CommandCodeModel,
+  parseCommandCodeModels,
+  parseCommandCodeStatus,
+} from "../commandCodeCli.ts";
+import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   providerModelsFromSettings,
@@ -23,6 +32,7 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("commandcode");
 const PROBE_TIMEOUT_MS = 10_000;
+const PROBE_FORCE_KILL_AFTER = "1 second";
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const PRESENTATION = {
   displayName: "Command Code",
@@ -47,6 +57,123 @@ function modelsFromSettings(
   return providerModelsFromSettings(discovered, settings.customModels, EMPTY_CAPABILITIES);
 }
 
+const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+};
+
+function capabilitiesFromCatalogModel(model: CommandCodeCatalogModel): ModelCapabilities {
+  if (model.effort.kind !== "adjustable") {
+    return EMPTY_CAPABILITIES;
+  }
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: "reasoningEffort",
+        label: "Reasoning",
+        options: [
+          { value: "default", label: "Default", isDefault: true },
+          ...model.effort.values
+            .filter((value) => value !== "default")
+            .map((value) => ({ value, label: EFFORT_LABELS[value] ?? value })),
+        ],
+      }),
+    ],
+  });
+}
+
+export function commandCodeCatalogModelsToServerModels(
+  catalog: ReadonlyArray<CommandCodeCatalogModel>,
+  customModels: ReadonlyArray<string>,
+): ReadonlyArray<ServerProviderModel> {
+  return providerModelsFromSettings(
+    catalog.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      subProvider: model.subProvider,
+      isCustom: false,
+      ...(model.isDefault !== undefined ? { isDefault: model.isDefault } : {}),
+      capabilities: capabilitiesFromCatalogModel(model),
+    })),
+    customModels,
+    EMPTY_CAPABILITIES,
+  );
+}
+
+export interface CommandCodeCatalogSeed {
+  readonly identity: CommandCodeCatalogIdentity;
+  readonly cliModels: ReadonlyArray<CommandCodeModel>;
+}
+
+export interface CommandCodeProviderProbeResult {
+  readonly snapshot: ServerProviderDraft;
+  readonly catalogSeed?: CommandCodeCatalogSeed | undefined;
+}
+
+interface CommandCodeCatalogSnapshotController {
+  readonly catalogFromCache: (
+    identity: CommandCodeCatalogIdentity,
+    cliModels: ReadonlyArray<CommandCodeModel>,
+  ) => Effect.Effect<ReadonlyArray<CommandCodeCatalogModel>>;
+  readonly refresh: (
+    identity: CommandCodeCatalogIdentity,
+    cliModels: ReadonlyArray<CommandCodeModel>,
+  ) => Effect.Effect<ReadonlyArray<CommandCodeCatalogModel>>;
+}
+
+export const enrichCommandCodeProviderSnapshot = Effect.fn("enrichCommandCodeProviderSnapshot")(
+  function* <Snapshot extends ServerProviderDraft>(input: {
+    readonly controller: CommandCodeCatalogSnapshotController;
+    readonly settings: CommandCodeSettings;
+    readonly snapshot: Snapshot;
+    readonly seed: CommandCodeCatalogSeed;
+    readonly getSnapshot: Effect.Effect<Snapshot>;
+    readonly enrichAdvisory: (snapshot: Snapshot) => Effect.Effect<Snapshot>;
+    readonly publishSnapshot: (snapshot: Snapshot) => Effect.Effect<void>;
+  }) {
+    const modelsFromCatalog = (catalog: ReadonlyArray<CommandCodeCatalogModel>) =>
+      commandCodeCatalogModelsToServerModels(catalog, input.settings.customModels);
+
+    const cached = yield* input.controller.catalogFromCache(
+      input.seed.identity,
+      input.seed.cliModels,
+    );
+    yield* input.publishSnapshot({
+      ...input.snapshot,
+      models: modelsFromCatalog(cached),
+    } as Snapshot);
+
+    const currentSnapshot = yield* input.getSnapshot;
+    const advisedSnapshot = yield* input.enrichAdvisory(currentSnapshot);
+    yield* input.publishSnapshot(advisedSnapshot);
+
+    const refreshed = yield* input.controller.refresh(input.seed.identity, input.seed.cliModels);
+    const latestSnapshot = yield* input.getSnapshot;
+    yield* input.publishSnapshot({
+      ...latestSnapshot,
+      models: modelsFromCatalog(refreshed),
+    } as Snapshot);
+  },
+);
+
+export const makeCommandCodeProbeCommand = Effect.fn("makeCommandCodeProbeCommand")(function* (
+  settings: CommandCodeSettings,
+  args: ReadonlyArray<string>,
+  environment: NodeJS.ProcessEnv,
+) {
+  const binaryPath = settings.binaryPath || "command-code";
+  const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
+  return ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+    env: environment,
+    shell: spawnCommand.shell,
+    forceKillAfter: PROBE_FORCE_KILL_AFTER,
+  });
+});
+
 const runCommand = (
   settings: CommandCodeSettings,
   args: ReadonlyArray<string>,
@@ -54,14 +181,8 @@ const runCommand = (
 ) =>
   Effect.gen(function* () {
     const binaryPath = settings.binaryPath || "command-code";
-    const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
-    return yield* spawnAndCollect(
-      binaryPath,
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: environment,
-        shell: spawnCommand.shell,
-      }),
-    );
+    const command = yield* makeCommandCodeProbeCommand(settings, args, environment);
+    return yield* spawnAndCollect(binaryPath, command);
   });
 
 export function buildInitialCommandCodeProviderSnapshot(
@@ -94,16 +215,21 @@ export function buildInitialCommandCodeProviderSnapshot(
   });
 }
 
-export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProviderStatus")(
+export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProviderStatus")(
   function* (
     settings: CommandCodeSettings,
+    instanceId: ProviderInstanceId,
     environment: NodeJS.ProcessEnv = process.env,
-  ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
+  ): Effect.fn.Return<
+    CommandCodeProviderProbeResult,
+    never,
+    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+  > {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const fallbackModels = modelsFromSettings(settings);
 
     if (!settings.enabled) {
-      return yield* buildInitialCommandCodeProviderSnapshot(settings);
+      return { snapshot: yield* buildInitialCommandCodeProviderSnapshot(settings) };
     }
 
     const statusExit = yield* runCommand(
@@ -114,76 +240,84 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
 
     if (Result.isFailure(statusExit)) {
       const missing = isCommandMissingCause(statusExit.failure);
-      return buildServerProvider({
-        driver: PROVIDER,
-        presentation: PRESENTATION,
-        enabled: true,
-        checkedAt,
-        models: fallbackModels,
-        probe: {
-          installed: !missing,
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: missing
-            ? "Command Code CLI (`command-code`) is not installed or not on PATH."
-            : "Failed to execute the Command Code CLI health check.",
-        },
-      });
+      return {
+        snapshot: buildServerProvider({
+          driver: PROVIDER,
+          presentation: PRESENTATION,
+          enabled: true,
+          checkedAt,
+          models: fallbackModels,
+          probe: {
+            installed: !missing,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            message: missing
+              ? "Command Code CLI (`command-code`) is not installed or not on PATH."
+              : "Failed to execute the Command Code CLI health check.",
+          },
+        }),
+      };
     }
 
     if (Option.isNone(statusExit.success)) {
-      return buildServerProvider({
-        driver: PROVIDER,
-        presentation: PRESENTATION,
-        enabled: true,
-        checkedAt,
-        models: fallbackModels,
-        probe: {
-          installed: true,
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: "Command Code CLI status check timed out.",
-        },
-      });
+      return {
+        snapshot: buildServerProvider({
+          driver: PROVIDER,
+          presentation: PRESENTATION,
+          enabled: true,
+          checkedAt,
+          models: fallbackModels,
+          probe: {
+            installed: true,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            message: "Command Code CLI status check timed out.",
+          },
+        }),
+      };
     }
 
     const statusResult = statusExit.success.value;
     const status =
       statusResult.code === 0 ? parseCommandCodeStatus(statusResult.stdout) : undefined;
     if (!status) {
-      return buildServerProvider({
-        driver: PROVIDER,
-        presentation: PRESENTATION,
-        enabled: true,
-        checkedAt,
-        models: fallbackModels,
-        probe: {
-          installed: true,
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: "Command Code CLI returned an unexpected status response.",
-        },
-      });
+      return {
+        snapshot: buildServerProvider({
+          driver: PROVIDER,
+          presentation: PRESENTATION,
+          enabled: true,
+          checkedAt,
+          models: fallbackModels,
+          probe: {
+            installed: true,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            message: "Command Code CLI returned an unexpected status response.",
+          },
+        }),
+      };
     }
 
     if (!status.authenticated) {
-      return buildServerProvider({
-        driver: PROVIDER,
-        presentation: PRESENTATION,
-        enabled: true,
-        checkedAt,
-        models: fallbackModels,
-        probe: {
-          installed: true,
-          version: status.version,
-          status: "error",
-          auth: { status: "unauthenticated" },
-          message: "Command Code is not authenticated. Run `command-code login`.",
-        },
-      });
+      return {
+        snapshot: buildServerProvider({
+          driver: PROVIDER,
+          presentation: PRESENTATION,
+          enabled: true,
+          checkedAt,
+          models: fallbackModels,
+          probe: {
+            installed: true,
+            version: status.version,
+            status: "error",
+            auth: { status: "unauthenticated" },
+            message: "Command Code is not authenticated. Run `command-code login`.",
+          },
+        }),
+      };
     }
 
     const modelExit = yield* runCommand(
@@ -191,21 +325,22 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
       ["--list-models", "--no-auto-update"],
       environment,
     ).pipe(Effect.timeoutOption(PROBE_TIMEOUT_MS), Effect.result);
-    const discovered =
+    const cliModels =
       Result.isSuccess(modelExit) &&
       Option.isSome(modelExit.success) &&
       modelExit.success.value.code === 0
-        ? parseCommandCodeModels(modelExit.success.value.stdout).map(
-            (model): ServerProviderModel => ({
-              ...model,
-              isCustom: false,
-              capabilities: EMPTY_CAPABILITIES,
-            }),
-          )
+        ? parseCommandCodeModels(modelExit.success.value.stdout)
         : [];
-    const modelDiscoveryFailed = discovered.length === 0;
+    const discovered = cliModels.map(
+      (model): ServerProviderModel => ({
+        ...model,
+        isCustom: false,
+        capabilities: EMPTY_CAPABILITIES,
+      }),
+    );
+    const modelDiscoveryFailed = cliModels.length === 0;
 
-    return buildServerProvider({
+    const snapshot = buildServerProvider({
       driver: PROVIDER,
       presentation: PRESENTATION,
       enabled: true,
@@ -224,5 +359,43 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
           : {}),
       },
     });
+    if (modelDiscoveryFailed) {
+      return { snapshot };
+    }
+    const binaryPath = settings.binaryPath || "command-code";
+    const resolvedBinaryPath = yield* resolveCommandPath(binaryPath, {
+      env: environment,
+    }).pipe(Effect.option);
+    if (Option.isNone(resolvedBinaryPath)) {
+      return { snapshot };
+    }
+    return {
+      snapshot,
+      catalogSeed: {
+        identity: {
+          instanceId,
+          resolvedBinaryPath: resolvedBinaryPath.value,
+          cliVersion: status.version,
+        },
+        cliModels,
+      },
+    };
+  },
+);
+
+export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProviderStatus")(
+  function* (
+    settings: CommandCodeSettings,
+    environment: NodeJS.ProcessEnv = process.env,
+  ): Effect.fn.Return<
+    ServerProviderDraft,
+    never,
+    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+  > {
+    return (yield* probeCommandCodeProviderStatus(
+      settings,
+      ProviderInstanceId.make("commandcode"),
+      environment,
+    )).snapshot;
   },
 );

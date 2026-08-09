@@ -480,6 +480,17 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
       );
     };
 
+    const getModelContextWindow = (modelSlug: string) => {
+      const key = normalizeCommandCodeModelKey(modelSlug);
+      return Ref.get(catalogRef).pipe(
+        Effect.map(
+          (catalog) =>
+            catalog.find((model) => normalizeCommandCodeModelKey(model.slug) === key)
+              ?.contextWindow,
+        ),
+      );
+    };
+
     return {
       cachePath,
       readCache,
@@ -487,6 +498,7 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
       refresh,
       getCatalog,
       getModelCapability,
+      getModelContextWindow,
     } as const;
   },
 );

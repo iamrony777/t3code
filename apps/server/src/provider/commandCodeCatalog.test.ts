@@ -376,11 +376,14 @@ describe("Command Code catalog cache", () => {
 
       const current = yield* reader.getCatalog();
       const capability = yield* reader.getModelCapability("MODEL");
+      const contextWindow = yield* reader.getModelContextWindow("MODEL");
       expect(current).toEqual(hydrated);
       expect(capability).toEqual({
         kind: "adjustable",
         values: ["high", "max"],
       });
+      expect(contextWindow).toBe(200_000);
+      expect(yield* reader.getModelContextWindow("missing")).toBeUndefined();
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 

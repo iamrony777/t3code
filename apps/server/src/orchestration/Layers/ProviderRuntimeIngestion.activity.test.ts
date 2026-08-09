@@ -1,6 +1,7 @@
 import {
   EventId,
   ProviderDriverKind,
+  RuntimeItemId,
   RuntimeTaskId,
   ThreadId,
   type ProviderRuntimeEvent,
@@ -80,5 +81,51 @@ describe("runtimeEventToActivities task progress", () => {
     expect(usagePayload.typedUsage).toEqual({ totalTokens: 4_200, toolUses: 7 });
     expect(usagePayload.usageSnapshot).toBe(true);
     expect(usagePayload).not.toHaveProperty("status");
+  });
+});
+
+describe("runtimeEventToActivities reasoning", () => {
+  it("maps reasoning item lifecycle to thinking activities", () => {
+    const started = {
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("evt-reasoning-start"),
+      itemId: RuntimeItemId.make("turn-1-reasoning"),
+      payload: { itemType: "reasoning", status: "inProgress" },
+    } satisfies ProviderRuntimeEvent;
+    const completed = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-reasoning-complete"),
+      itemId: RuntimeItemId.make("turn-1-reasoning"),
+      payload: { itemType: "reasoning", status: "completed" },
+    } satisfies ProviderRuntimeEvent;
+
+    const startedActivities = runtimeEventToActivities(started);
+    const completedActivities = runtimeEventToActivities(completed);
+
+    expect(startedActivities).toHaveLength(1);
+    expect(startedActivities[0]?.kind).toBe("reasoning.started");
+    expect(startedActivities[0]?.tone).toBe("info");
+    expect((startedActivities[0]?.payload as Record<string, unknown>).itemId).toBe(
+      "turn-1-reasoning",
+    );
+
+    expect(completedActivities).toHaveLength(1);
+    expect(completedActivities[0]?.kind).toBe("reasoning.completed");
+  });
+
+  it("keeps tool item lifecycle unchanged", () => {
+    const event = {
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("evt-tool-start"),
+      itemId: RuntimeItemId.make("tool-1"),
+      payload: { itemType: "dynamic_tool_call", status: "inProgress", title: "run_command" },
+    } satisfies ProviderRuntimeEvent;
+
+    const activities = runtimeEventToActivities(event);
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.kind).toBe("tool.started");
   });
 });

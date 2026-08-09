@@ -329,7 +329,10 @@ export function UsagePage() {
                   <tbody>
                     {recentDays.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="py-6 text-center text-muted-foreground">
+                        <td
+                          colSpan={PROVIDER_ORDER.length + 2}
+                          className="py-6 text-center text-muted-foreground"
+                        >
                           No activity in this window.
                         </td>
                       </tr>

@@ -218,10 +218,22 @@ export const make = Effect.gen(function* () {
     const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
 
-    return [
-      { provider: "claude" as const, dir: claudeDir },
-      { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
+    const dirs: Array<{ provider: UsageProviderKind; dir: string }> = [
+      { provider: "claude", dir: claudeDir },
+      { provider: "codex", dir: path.join(codexLayout.sharedHomePath, "sessions") },
     ];
+
+    // Command Code has no server setting; it writes transcripts under
+    // `~/.commandcode/projects` from the CLI's own home.
+    const commandCodeHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+    if (commandCodeHome) {
+      dirs.push({
+        provider: "commandcode",
+        dir: path.join(commandCodeHome, ".commandcode", "projects"),
+      });
+    }
+
+    return dirs;
   });
 
   /**

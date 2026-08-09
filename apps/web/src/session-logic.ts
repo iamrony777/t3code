@@ -81,6 +81,8 @@ export interface WorkLogEntry {
   toolData?: unknown;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  /** Reasoning block id for "Thinking" rows (one row per reasoning item). */
+  reasoningItemId?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
@@ -285,6 +287,11 @@ export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolea
   // task.progress (tone "thinking") and the neutral filter was swallowing
   // them exactly while the fleet ran — the one moment they matter most.
   if (entry.agentSpawn !== undefined) {
+    return false;
+  }
+  // Reasoning ("Thinking") rows carry the chain-of-thought text and must
+  // never be hidden behind the settled-neutral collapse.
+  if (entry.reasoningItemId !== undefined) {
     return false;
   }
   if (!workLogEntryIsToolLike(entry)) {
@@ -766,6 +773,11 @@ export function deriveWorkLogEntries(
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;
+    // Reasoning lifecycle markers carry no text; the reasoning.updated rows
+    // (stable per-item id) are the renderable "Thinking" rows.
+    if (activity.kind === "reasoning.started" || activity.kind === "reasoning.completed") {
+      continue;
+    }
     entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries).map((entry) => {
@@ -829,28 +841,39 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
-  const detail = isTaskActivity
-    ? !taskDetailAsLabel &&
-      payload &&
-      typeof payload.detail === "string" &&
-      payload.detail.length > 0
-      ? stripTrailingExitCode(payload.detail).output
-      : null
-    : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  const isReasoningActivity = activity.kind === "reasoning.updated";
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
-    tone:
-      activity.kind === "task.progress"
+    tone: isReasoningActivity
+      ? "thinking"
+      : activity.kind === "task.progress"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
           : activity.tone,
     activityKind: activity.kind,
   };
+  const reasoningText =
+    isReasoningActivity && typeof payload?.text === "string" && payload.text.length > 0
+      ? payload.text
+      : null;
+  const detail = reasoningText
+    ? reasoningText
+    : isTaskActivity
+      ? !taskDetailAsLabel &&
+        payload &&
+        typeof payload.detail === "string" &&
+        payload.detail.length > 0
+        ? stripTrailingExitCode(payload.detail).output
+        : null
+      : extractToolDetail(payload, title ?? activity.summary);
+  if (isReasoningActivity && typeof payload?.itemId === "string") {
+    entry.reasoningItemId = payload.itemId;
+  }
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {

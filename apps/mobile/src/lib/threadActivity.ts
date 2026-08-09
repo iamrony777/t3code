@@ -54,6 +54,8 @@ export interface ThreadFeedActivity {
     | "zap";
   readonly toolLike: boolean;
   readonly status: "success" | "failure" | "neutral" | null;
+  /** Present on "Thinking" rows: exempts them from neutral-hide. */
+  readonly reasoningItemId?: string;
 }
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
@@ -75,6 +77,8 @@ interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   toolData?: unknown;
+  /** Reasoning block id for "Thinking" rows (one row per reasoning item). */
+  reasoningItemId?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -309,6 +313,11 @@ function deriveWorkLogEntries(
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;
+    // Reasoning lifecycle markers carry no text; the reasoning.updated rows
+    // (stable per-item id) are the renderable "Thinking" rows.
+    if (activity.kind === "reasoning.started" || activity.kind === "reasoning.completed") {
+      continue;
+    }
     entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries);
@@ -357,23 +366,34 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
       ? payload.taskId
       : undefined;
+  const isReasoningActivity = activity.kind === "reasoning.updated";
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
     ...(taskId ? { taskId } : {}),
     label: taskLabel || activity.summary,
-    tone:
-      activity.kind === "task.progress"
+    tone: isReasoningActivity
+      ? "thinking"
+      : activity.kind === "task.progress"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
           : activity.tone,
     activityKind: activity.kind,
   };
+  const reasoningText =
+    isReasoningActivity && typeof payload?.text === "string" && payload.text.length > 0
+      ? payload.text
+      : null;
+  if (isReasoningActivity && typeof payload?.itemId === "string") {
+    entry.reasoningItemId = payload.itemId;
+  }
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
-  if (
+  if (reasoningText) {
+    entry.detail = reasoningText;
+  } else if (
     !taskDetailAsLabel &&
     payload &&
     typeof payload.detail === "string" &&
@@ -1282,7 +1302,12 @@ function appendPresentedFeedEntry(
   }
 
   const activities = entry.activities.filter(
-    (activity) => !(activity.toolLike && activity.status === "neutral"),
+    (activity) =>
+      !(
+        activity.toolLike &&
+        activity.status === "neutral" &&
+        activity.reasoningItemId === undefined
+      ),
   );
   if (activities.length === 0) {
     return;
@@ -1506,6 +1531,9 @@ export function buildThreadFeed(
               icon: workEntryIcon(entry),
               toolLike: workLogEntryIsToolLike(entry),
               status: workEntryStatus(entry),
+              ...(entry.reasoningItemId !== undefined
+                ? { reasoningItemId: entry.reasoningItemId }
+                : {}),
             },
           };
         }),

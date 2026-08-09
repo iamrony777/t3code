@@ -68,7 +68,11 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "claude" ? line.includes('"usage"') : line.includes('"token_count"');
+  return provider === "claude"
+    ? line.includes('"usage"')
+    : provider === "commandcode"
+      ? line.includes('"usage"') && line.includes('"model"')
+      : line.includes('"token_count"');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -239,6 +243,93 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
     // Rollout files are unique per session, so events need no global dedup.
+    dedupeKey: null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Command Code                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Parses one line of a Command Code transcript.
+ *
+ * Command Code writes one record per assistant message:
+ *
+ * ```json
+ * {
+ *   "type": "message",
+ *   "timestamp": "2026-08-09T18:13:04.506Z",
+ *   "message": { "role": "assistant", "content": [...] },
+ *   "usage": {
+ *     "inputTokens": 47068,
+ *     "outputTokens": 164,
+ *     "cacheReadTokens": 8832,
+ *     "cacheWriteTokens": 0,
+ *     "costUsd": 0.0066601696
+ *   },
+ *   "model": "deepseek/deepseek-v4-flash"
+ * }
+ * ```
+ *
+ * Token semantics observed on disk:
+ * - `inputTokens` is a *cumulative* running total that includes the cached
+ *   portion, so `uncachedInputTokens` is `inputTokens` minus
+ *   `cacheReadTokens` minus `cacheWriteTokens` (clamped at zero).
+ * - `cacheReadTokens` / `cacheWriteTokens` are per-message deltas.
+ * - `outputTokens` is per-message.
+ * - `reasoningTokens` is not broken out (thinking is folded into output).
+ * - `costUsd` is the per-message cost, so it is reported directly.
+ *
+ * Session files are unique per session, so records need no cross-file dedup.
+ */
+export function parseCommandCodeLine(line: string, sessionId: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const record = parsed as Record<string, unknown>;
+  if (record["type"] !== "message") return null;
+  if (typeof record["model"] !== "string" || record["model"].length === 0) return null;
+
+  const usage = record["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const timestampMs = parseTimestampMs(record["timestamp"]);
+  if (timestampMs === null) return null;
+
+  const inputTokens = int(usageRecord["inputTokens"]);
+  const cachedInputTokens = int(usageRecord["cacheReadTokens"]);
+  const cacheCreationTokens = int(usageRecord["cacheWriteTokens"]);
+  const outputTokens = int(usageRecord["outputTokens"]);
+
+  const totals: UsageTokenTotals = {
+    // inputTokens is cumulative and includes the cached portion.
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    // Command Code does not break reasoning out of output tokens.
+    reasoningTokens: 0,
+  };
+
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["costUsd"];
+
+  return {
+    provider: "commandcode",
+    timestampMs,
+    model: record["model"],
+    sessionId,
+    totals,
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    // Session files are unique per session, so events need no global dedup.
     dedupeKey: null,
   };
 }

@@ -204,3 +204,29 @@ describe("dedupeWithinFile", () => {
     ).toHaveLength(2);
   });
 });
+
+describe("scan cache with commandcode", () => {
+  it("round-trips commandcode entries", () => {
+    const original = cacheWith([
+      [
+        "/home/u/.commandcode/projects/proj/abc.jsonl",
+        100,
+        [record({ provider: "commandcode", model: "deepseek/deepseek-v4-flash" })],
+      ],
+    ]);
+    // The helper stamps the provider on the entry; patch it to commandcode.
+    for (const [path, entry] of original) {
+      original.set(path, { ...entry, provider: "commandcode" });
+    }
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
+
+    expect(restored.size).toBe(1);
+    expect(restored.get("/home/u/.commandcode/projects/proj/abc.jsonl")?.provider).toBe(
+      "commandcode",
+    );
+    expect(restored.get("/home/u/.commandcode/projects/proj/abc.jsonl")?.records[0]?.model).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
+  });
+});

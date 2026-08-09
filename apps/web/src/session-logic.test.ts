@@ -1535,6 +1535,89 @@ describe("deriveWorkLogEntries", () => {
   });
 });
 
+describe("deriveWorkLogEntries reasoning rows", () => {
+  it("renders one thinking row per reasoning item from reasoning.updated", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "reasoning-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        tone: "info",
+        payload: {
+          itemId: "turn-1-reasoning",
+          itemType: "reasoning",
+          text: "The user wants to add auth. Let me check the routes.",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.tone).toBe("thinking");
+    expect(entries[0]?.reasoningItemId).toBe("turn-1-reasoning");
+    expect(entries[0]?.detail).toContain("Let me check the routes");
+  });
+
+  it("drops reasoning.started and reasoning.completed lifecycle markers", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "reasoning-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "reasoning.started",
+        summary: "Thinking",
+        tone: "info",
+        payload: { itemId: "turn-1-reasoning", itemType: "reasoning" },
+      }),
+      makeActivity({
+        id: "reasoning-update",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        tone: "info",
+        payload: {
+          itemId: "turn-1-reasoning",
+          itemType: "reasoning",
+          text: "checking",
+        },
+      }),
+      makeActivity({
+        id: "reasoning-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "reasoning.completed",
+        summary: "Thinking",
+        tone: "info",
+        payload: { itemId: "turn-1-reasoning", itemType: "reasoning" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("reasoning-update");
+  });
+
+  it("keeps reasoning rows visible under the neutral filter", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "reasoning-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        tone: "info",
+        payload: {
+          itemId: "turn-1-reasoning",
+          itemType: "reasoning",
+          text: "thinking text",
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry).toBeDefined();
+    expect(workEntryIndicatesToolNeutralStatus(entry!)).toBe(false);
+  });
+});
+
 describe("deriveTimelineEntries", () => {
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(

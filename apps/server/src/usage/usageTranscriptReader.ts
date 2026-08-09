@@ -22,6 +22,7 @@ import {
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
+  parseCommandCodeLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -108,6 +109,9 @@ export async function readTranscriptRecords(
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  // Command Code writes one file per session (`<sessionId>.jsonl`), so the
+  // file name is the session id.
+  const commandCodeSessionId = NodePath.basename(filePath, ".jsonl");
 
   try {
     const lines = NodeReadline.createInterface({
@@ -125,6 +129,13 @@ export async function readTranscriptRecords(
           continue;
         }
         const record = parseCodexLine(line, codexState);
+        if (record !== null) records.push(record);
+        continue;
+      }
+
+      if (provider === "commandcode") {
+        if (!mightCarryUsage(line, provider)) continue;
+        const record = parseCommandCodeLine(line, commandCodeSessionId);
         if (record !== null) records.push(record);
         continue;
       }

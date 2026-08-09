@@ -96,6 +96,16 @@ Command Code supports normal text turns, streamed reasoning and responses, tool 
 activity, cancellation, explicit session resume, model selection, and T3 Code's generated thread
 titles, branch names, commit messages, and pull request text.
 
+Command Code's chain-of-thought appears in the chat as expandable **Thinking** rows before the
+response, just as it does for the other reasoning providers.
+
+## Usage reporting
+
+Command Code usage (tokens and cost) is reported on the **Usage** page. T3 Code scans Command
+Code's own session transcripts under `~/.commandcode/projects`, so usage covers turns run outside
+T3 Code too. Cost is taken from the cost Command Code reports per message; when a model has no
+reported cost, T3 Code prices it against the same rate table it uses for the other providers.
+
 The Early Access adapter runs Command Code in headless JSON mode. It does not currently include:
 
 - image or file attachments;

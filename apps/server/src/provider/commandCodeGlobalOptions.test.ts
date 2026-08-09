@@ -55,10 +55,10 @@ describe("resolveCommandCodeSettingsFilePath", () => {
   it("uses the selected instance environment without falling back to the host home", () => {
     const joinPath = (...parts: ReadonlyArray<string>) => parts.join("/");
     expect(resolveCommandCodeSettingsFilePath({ HOME: "/instance/home" }, joinPath)).toBe(
-      "/instance/home/.commandcode/settings.json",
+      "/instance/home/.commandcode/config.json",
     );
     expect(resolveCommandCodeSettingsFilePath({ USERPROFILE: "C:/Users/Test" }, joinPath)).toBe(
-      "C:/Users/Test/.commandcode/settings.json",
+      "C:/Users/Test/.commandcode/config.json",
     );
     expect(resolveCommandCodeSettingsFilePath({}, joinPath)).toBeUndefined();
   });
@@ -68,7 +68,7 @@ describe("Command Code global options controller", () => {
   it.effect("publishes Compact Mode before Taste Learning with native current values", () =>
     Effect.gen(function* () {
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () =>
           Effect.succeed(encodeJson({ compactMode: "fast", tasteLearning: false })),
         runCommand: () => Effect.succeed(successfulCommand),
@@ -99,7 +99,7 @@ describe("Command Code global options controller", () => {
     Effect.gen(function* () {
       const document = yield* Ref.make(encodeJson({ compactMode: "default", tasteLearning: true }));
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Ref.get(document),
         runCommand: () => Effect.succeed(successfulCommand),
       });
@@ -121,7 +121,7 @@ describe("Command Code global options controller", () => {
       const document = yield* Ref.make(encodeJson({}));
       const commands = yield* Ref.make<ReadonlyArray<ReadonlyArray<string>>>([]);
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Ref.get(document),
         runCommand: (input) =>
           Effect.gen(function* () {
@@ -160,7 +160,7 @@ describe("Command Code global options controller", () => {
     Effect.gen(function* () {
       const calls = yield* Ref.make(0);
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Effect.succeed(encodeJson({})),
         runCommand: () =>
           Ref.update(calls, (value) => value + 1).pipe(Effect.as(successfulCommand)),
@@ -183,13 +183,13 @@ describe("Command Code global options controller", () => {
   it.effect("fails on native command errors and read-after-write mismatches", () =>
     Effect.gen(function* () {
       const nonzero = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
-        readSettingsFile: () => Effect.succeed(encodeJson({ compactMode: "fast" })),
+        settingsFilePath: "/home/test/.commandcode/config.json",
+        readSettingsFile: () => Effect.succeed(encodeJson({ compactMode: "default" })),
         runCommand: () =>
           Effect.succeed({ ...successfulCommand, exitCode: 1, stderr: "native failure" }),
       });
       const mismatched = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Effect.succeed(encodeJson({ compactMode: "default" })),
         runCommand: () => Effect.succeed(successfulCommand),
       });
@@ -209,7 +209,7 @@ describe("Command Code global options controller", () => {
   it.effect("treats bounded-output truncation as a mutation failure", () =>
     Effect.gen(function* () {
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Effect.succeed(encodeJson({ tasteLearning: true })),
         runCommand: () =>
           Effect.succeed({ ...successfulCommand, stdout: "partial", stdoutTruncated: true }),
@@ -225,7 +225,7 @@ describe("Command Code global options controller", () => {
   it.effect("reports read failures after a successful native command", () =>
     Effect.gen(function* () {
       const controller = yield* createCommandCodeGlobalOptionsController({
-        settingsFilePath: "/home/test/.commandcode/settings.json",
+        settingsFilePath: "/home/test/.commandcode/config.json",
         readSettingsFile: () => Effect.fail("permission denied"),
         runCommand: () => Effect.succeed(successfulCommand),
       });
@@ -242,7 +242,7 @@ describe("Command Code global options controller", () => {
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>();
         const controller = yield* createCommandCodeGlobalOptionsController({
-          settingsFilePath: "/home/test/.commandcode/settings.json",
+          settingsFilePath: "/home/test/.commandcode/config.json",
           readSettingsFile: () => Effect.succeed(encodeJson({ tasteLearning: true })),
           runCommand: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
         });
@@ -258,6 +258,38 @@ describe("Command Code global options controller", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("completes compact mutations after the native config write and reaps the CLI", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const interrupted = yield* Deferred.make<void>();
+        const document = yield* Ref.make(
+          encodeJson({ compactMode: "default", tasteLearning: true }),
+        );
+        const controller = yield* createCommandCodeGlobalOptionsController({
+          settingsFilePath: "/home/test/.commandcode/config.json",
+          readSettingsFile: () => Ref.get(document),
+          runCommand: () =>
+            Effect.gen(function* () {
+              yield* Ref.set(document, encodeJson({ compactMode: "fast", tasteLearning: true }));
+              yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }).pipe(Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined))),
+        });
+
+        const mutation = yield* controller
+          .setGlobalOption({ optionId: "compactMode", value: "fast" })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        yield* TestClock.adjust("10 seconds");
+        yield* Fiber.join(mutation);
+
+        expect(yield* Deferred.isDone(interrupted)).toBe(true);
+        expect((yield* controller.readOptions)[0]?.currentValue).toBe("fast");
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("serializes concurrent mutations for one controller", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -267,7 +299,7 @@ describe("Command Code global options controller", () => {
         const document = yield* Ref.make(encodeJson({ tasteLearning: true }));
         const callCount = yield* Ref.make(0);
         const controller = yield* createCommandCodeGlobalOptionsController({
-          settingsFilePath: "/home/test/.commandcode/settings.json",
+          settingsFilePath: "/home/test/.commandcode/config.json",
           readSettingsFile: () => Ref.get(document),
           runCommand: (input) =>
             Effect.gen(function* () {

@@ -580,7 +580,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-disabled-" });
         const commandCodeDir = path.join(home, ".commandcode");
         yield* fs.makeDirectory(commandCodeDir, { recursive: true });
-        const settingsFile = path.join(commandCodeDir, "settings.json");
+        const settingsFile = path.join(commandCodeDir, "config.json");
         yield* fs.writeFileString(settingsFile, '{"compactMode":"fast","tasteLearning":false}');
         const instanceId = ProviderInstanceId.make("commandcode_disabled");
         const { registry } = yield* makeProviderInstanceRegistry({

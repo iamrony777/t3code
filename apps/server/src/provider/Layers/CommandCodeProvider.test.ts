@@ -10,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as ServerConfig from "../../config.ts";
@@ -440,16 +441,17 @@ describe("makeCommandCodeGlobalOptionsControllerForProvider", () => {
         const path = yield* Path.Path;
         const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-home-" });
         const commandCodeDir = path.join(home, ".commandcode");
-        const settingsFile = path.join(commandCodeDir, "settings.json");
+        const settingsFile = path.join(commandCodeDir, "config.json");
         const executable = path.join(home, "command-code");
         yield* fs.makeDirectory(commandCodeDir, { recursive: true });
         yield* fs.writeFileString(
           executable,
           [
             "#!/bin/sh",
-            'settings="$HOME/.commandcode/settings.json"',
+            'settings="$HOME/.commandcode/config.json"',
             'if [ "$1" = "--config" ] && [ "$2" = "compact-mode=fast" ]; then',
             '  printf \'%s\' \'{"compactMode":"fast","tasteLearning":true}\' > "$settings"',
+            "  exec sleep 30",
             'elif [ "$1" = "taste" ] && [ "$2" = "disable" ] && [ "$3" = "--user" ]; then',
             '  printf \'%s\' \'{"compactMode":"fast","tasteLearning":false}\' > "$settings"',
             "else",
@@ -465,7 +467,9 @@ describe("makeCommandCodeGlobalOptionsControllerForProvider", () => {
         );
         expect((yield* controller.readOptions)[1]?.currentValue).toBe(true);
 
-        yield* controller.setGlobalOption({ optionId: "compactMode", value: "fast" });
+        yield* controller
+          .setGlobalOption({ optionId: "compactMode", value: "fast" })
+          .pipe(TestClock.withLive);
         yield* controller.setGlobalOption({ optionId: "tasteLearning", value: false });
 
         expect(decodeJson(yield* fs.readFileString(settingsFile))).toEqual({

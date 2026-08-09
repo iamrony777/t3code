@@ -14,6 +14,7 @@ import {
 export const COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS = 10_000;
 export const COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES = 64 * 1024;
 export const COMMAND_CODE_SETTINGS_MAX_BYTES = 1024 * 1024;
+const COMMAND_CODE_SETTINGS_POLL_INTERVAL = "50 millis";
 
 const CompactMode = Schema.Literals(["default", "fast"]);
 type CompactMode = typeof CompactMode.Type;
@@ -60,7 +61,7 @@ export function resolveCommandCodeSettingsFilePath(
   joinPath: (...parts: ReadonlyArray<string>) => string,
 ): string | undefined {
   const homeDirectory = environment.HOME?.trim() || environment.USERPROFILE?.trim();
-  return homeDirectory ? joinPath(homeDirectory, ".commandcode", "settings.json") : undefined;
+  return homeDirectory ? joinPath(homeDirectory, ".commandcode", "config.json") : undefined;
 }
 
 const DEFAULT_SETTINGS: CommandCodeGlobalSettings = {
@@ -158,6 +159,20 @@ function boundedCommandDetail(result: CommandCodeGlobalOptionCommandResult): str
   return detail.length > 0 ? detail.slice(0, 1_000) : `exit code ${result.exitCode}`;
 }
 
+function settingValue(
+  settings: CommandCodeGlobalSettings,
+  optionId: ProviderGlobalOptionMutation["optionId"],
+): string | boolean | undefined {
+  switch (optionId) {
+    case "compactMode":
+      return settings.compactMode;
+    case "tasteLearning":
+      return settings.tasteLearning;
+    default:
+      return undefined;
+  }
+}
+
 export const createCommandCodeGlobalOptionsController = Effect.fn(
   "createCommandCodeGlobalOptionsController",
 )(function* <DependencyError>(dependencies: CommandCodeGlobalOptionsDependencies<DependencyError>) {
@@ -176,45 +191,78 @@ export const createCommandCodeGlobalOptionsController = Effect.fn(
     mutation: ProviderGlobalOptionMutation,
   ) {
     const command = yield* commandForMutation(mutation);
-    if (dependencies.settingsFilePath === undefined) {
+    const settingsFilePath = dependencies.settingsFilePath;
+    if (settingsFilePath === undefined) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Cannot resolve the Command Code settings path for this provider instance.",
       });
     }
 
-    const commandExit = yield* dependencies
+    const commandEffect = dependencies
       .runCommand({
         args: command.args,
         maxStdoutBytes: COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES,
         maxStderrBytes: COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES,
       })
-      .pipe(Effect.timeoutOption(COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS), Effect.result);
-    if (Result.isFailure(commandExit)) {
-      return yield* new ProviderGlobalOptionMutationError({
-        message: "Failed to run the Command Code settings command.",
-        cause: commandExit.failure,
-      });
-    }
-    if (Option.isNone(commandExit.success)) {
+      .pipe(
+        Effect.map((result) => ({ _tag: "CommandCompleted", result }) as const),
+        Effect.catch((cause) => Effect.succeed({ _tag: "CommandFailed", cause } as const)),
+      );
+
+    const waitForExpectedSetting = (): Effect.Effect<{ readonly _tag: "SettingVerified" }, never> =>
+      dependencies.readSettingsFile(settingsFilePath).pipe(
+        Effect.map(parseCommandCodeGlobalSettings),
+        Effect.flatMap((settings) =>
+          settingValue(settings, mutation.optionId) === command.expected
+            ? Effect.succeed({ _tag: "SettingVerified" } as const)
+            : Effect.sleep(COMMAND_CODE_SETTINGS_POLL_INTERVAL).pipe(
+                Effect.andThen(waitForExpectedSetting()),
+              ),
+        ),
+        Effect.catch(() =>
+          Effect.sleep(COMMAND_CODE_SETTINGS_POLL_INTERVAL).pipe(
+            Effect.andThen(waitForExpectedSetting()),
+          ),
+        ),
+      );
+
+    // `--config` persists the value before Command Code enters its normal
+    // interactive flow, so the verified write is the command's completion.
+    const operation =
+      mutation.optionId === "compactMode"
+        ? Effect.raceFirst(commandEffect, waitForExpectedSetting())
+        : commandEffect;
+    const commandExit = yield* operation.pipe(
+      Effect.timeoutOption(COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS),
+    );
+    if (Option.isNone(commandExit)) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Command Code settings command timed out.",
       });
     }
+    const outcome = commandExit.value;
+    if (outcome._tag === "SettingVerified") return;
+    if (outcome._tag === "CommandFailed") {
+      return yield* new ProviderGlobalOptionMutationError({
+        message: "Failed to run the Command Code settings command.",
+        cause: outcome.cause,
+      });
+    }
 
-    const result = commandExit.success.value;
+    const result = outcome.result;
     if (result.stdoutTruncated || result.stderrTruncated) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Command Code settings command produced too much output.",
       });
     }
-    if (result.exitCode !== 0) {
+    if (mutation.optionId !== "compactMode" && result.exitCode !== 0) {
       return yield* new ProviderGlobalOptionMutationError({
         message: `Command Code settings command failed: ${boundedCommandDetail(result)}`,
       });
     }
 
     const verifiedDocument = yield* dependencies
-      .readSettingsFile(dependencies.settingsFilePath)
+      .readSettingsFile(settingsFilePath)
       .pipe(Effect.result);
     if (Result.isFailure(verifiedDocument)) {
       return yield* new ProviderGlobalOptionMutationError({
@@ -223,8 +271,16 @@ export const createCommandCodeGlobalOptionsController = Effect.fn(
       });
     }
     const verified = parseCommandCodeGlobalSettings(verifiedDocument.success);
-    const actual =
-      mutation.optionId === "compactMode" ? verified.compactMode : verified.tasteLearning;
+    const actual = settingValue(verified, mutation.optionId);
+    if (
+      mutation.optionId === "compactMode" &&
+      actual !== command.expected &&
+      result.exitCode !== 0
+    ) {
+      return yield* new ProviderGlobalOptionMutationError({
+        message: `Command Code settings command failed: ${boundedCommandDetail(result)}`,
+      });
+    }
     if (actual !== command.expected) {
       return yield* new ProviderGlobalOptionMutationError({
         message: `Command Code did not persist ${mutation.optionId}.`,

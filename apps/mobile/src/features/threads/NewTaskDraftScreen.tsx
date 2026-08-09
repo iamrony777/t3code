@@ -7,7 +7,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type ProviderGlobalOption,
+  type ServerProviderGlobalOptionSetInput,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -40,6 +44,8 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { resolveSelectableModelSelection } from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
@@ -49,6 +55,8 @@ import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { useCreateProjectThread } from "./use-project-actions";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
+
+const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
 function formatWorkspaceLabel(input: {
   readonly workspaceMode: string;
@@ -92,6 +100,9 @@ export function NewTaskDraftScreen(props: {
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
   );
+  const setProviderGlobalOption = useAtomCommand(serverEnvironment.setProviderGlobalOption, {
+    reportFailure: false,
+  });
   const environmentConnected =
     selectedProject !== null &&
     connectedEnvironments.find(
@@ -565,6 +576,39 @@ export function NewTaskDraftScreen(props: {
       }),
     [flow.selectedModel?.options, flow.selectedModelOption?.capabilities],
   );
+  const selectedProviderStatus = useMemo(
+    () =>
+      selectedEnvironmentServerConfig?.providers.find(
+        (provider) => provider.instanceId === flow.selectedModel?.instanceId,
+      ) ?? null,
+    [selectedEnvironmentServerConfig, flow.selectedModel?.instanceId],
+  );
+  const handleSetProviderGlobalOption = useCallback(
+    async (input: ServerProviderGlobalOptionSetInput) => {
+      const environmentId = selectedProject?.environmentId;
+      if (!environmentId) {
+        throw new Error("No environment is selected.");
+      }
+      const result = await setProviderGlobalOption({ environmentId, input });
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) {
+        return;
+      }
+      const error = squashAtomCommandFailure(result);
+      if (error instanceof Error) {
+        throw error;
+      }
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "message" in error &&
+        typeof error.message === "string"
+      ) {
+        throw new Error(error.message);
+      }
+      throw new Error("Could not update the provider setting.");
+    },
+    [selectedProject?.environmentId, setProviderGlobalOption],
+  );
 
   const workspaceMenuActions = useMemo(() => {
     const branchActions =
@@ -963,6 +1007,9 @@ export function NewTaskDraftScreen(props: {
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       optionDescriptors={providerOptionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
+      environmentId={selectedProject.environmentId}
+      globalOptions={selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS}
+      onSetGlobalOption={handleSetProviderGlobalOption}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
     />

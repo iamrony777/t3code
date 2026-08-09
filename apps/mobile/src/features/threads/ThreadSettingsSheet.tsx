@@ -1,9 +1,12 @@
 import type {
+  EnvironmentId,
   ModelSelection,
+  ProviderGlobalOption,
   ProviderInteractionMode,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
   RuntimeMode,
+  ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentLabel,
@@ -11,8 +14,9 @@ import {
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import * as Haptics from "expo-haptics";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -28,9 +32,18 @@ import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import { applyProviderOptionSelection, providerOptionValueLabels } from "../../lib/providerOptions";
+import {
+  applyProviderOptionSelection,
+  providerOptionValueLabels,
+  runProviderGlobalOptionChange,
+} from "../../lib/providerOptions";
 import { useThemeColor } from "../../lib/useThemeColor";
-import { pendingModelAfterPress } from "./thread-settings-sheet-state";
+import {
+  buildThreadSettingsOptionSections,
+  pendingModelAfterPress,
+  runTrackedProviderGlobalOptionMutation,
+  selectPendingProviderGlobalOptionIds,
+} from "./thread-settings-sheet-state";
 import type { ThreadSettingsSheetCloseReason } from "./use-thread-settings-sheet-presentation";
 
 /**
@@ -276,7 +289,8 @@ function SwitchRow(props: {
 }
 
 type SubmenuPage =
-  | { readonly kind: "descriptor"; readonly id: string }
+  | { readonly kind: "model-option"; readonly id: string }
+  | { readonly kind: "global-option"; readonly id: string }
   | { readonly kind: "runtime" };
 
 /**
@@ -310,6 +324,9 @@ export function ThreadSettingsSheet(props: {
   readonly onSelectModel: (option: ModelOption) => void;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
+  readonly environmentId: EnvironmentId;
+  readonly globalOptions: ReadonlyArray<ProviderGlobalOption>;
+  readonly onSetGlobalOption: (input: ServerProviderGlobalOptionSetInput) => Promise<void>;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
 }) {
@@ -319,6 +336,9 @@ export function ThreadSettingsSheet(props: {
   const [expandedProviders, setExpandedProviders] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingModel, setPendingModel] = useState<ModelOption | null>(null);
   const [submenu, setSubmenu] = useState<SubmenuPage | null>(null);
+  const [pendingGlobalOptionCounts, setPendingGlobalOptionCounts] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
   const wasPresentedRef = useRef(false);
   const notifyDismissed = useCallback(() => {
     if (!wasPresentedRef.current) {
@@ -379,18 +399,23 @@ export function ThreadSettingsSheet(props: {
   // different ids for the same "Reasoning" concept.
   const descriptorTemplate = (() => {
     const seen = new Map<string, { type: "select" | "boolean" }>();
-    for (const group of props.providerGroups) {
-      const driver = group.models[0]?.providerDriver;
-      if (driver === undefined || !PRIMARY_PROVIDER_DRIVERS.has(driver)) {
-        continue;
-      }
-      for (const model of group.models) {
-        if (model.isLegacy) {
+    // A provider with native global settings renders only the selected model's
+    // own traits before those settings. Otherwise a fixed-effort Command Code
+    // model would inherit disabled Reasoning rows from unrelated harnesses.
+    if (props.globalOptions.length === 0) {
+      for (const group of props.providerGroups) {
+        const driver = group.models[0]?.providerDriver;
+        if (driver === undefined || !PRIMARY_PROVIDER_DRIVERS.has(driver)) {
           continue;
         }
-        for (const descriptor of model.capabilities?.optionDescriptors ?? []) {
-          if (!seen.has(descriptor.label)) {
-            seen.set(descriptor.label, { type: descriptor.type });
+        for (const model of group.models) {
+          if (model.isLegacy) {
+            continue;
+          }
+          for (const descriptor of model.capabilities?.optionDescriptors ?? []) {
+            if (!seen.has(descriptor.label)) {
+              seen.set(descriptor.label, { type: descriptor.type });
+            }
           }
         }
       }
@@ -402,6 +427,26 @@ export function ThreadSettingsSheet(props: {
     }
     return [...seen.entries()].map(([label, entry]) => ({ label, ...entry }));
   })();
+  const selectedInstanceId = props.selectedModel?.instanceId ?? null;
+  const pendingGlobalOptionIds = useMemo(
+    () =>
+      selectedInstanceId
+        ? selectPendingProviderGlobalOptionIds(
+            pendingGlobalOptionCounts,
+            props.environmentId,
+            selectedInstanceId,
+          )
+        : new Set<string>(),
+    [pendingGlobalOptionCounts, props.environmentId, selectedInstanceId],
+  );
+  const optionSections = buildThreadSettingsOptionSections(
+    descriptorTemplate.map((entry) => ({
+      ...entry,
+      descriptor: displayedDescriptors.find((descriptor) => descriptor.label === entry.label),
+    })),
+    props.globalOptions,
+    pendingGlobalOptionIds,
+  );
 
   const handleSave = () => {
     if (pendingModel) {
@@ -426,6 +471,25 @@ export function ThreadSettingsSheet(props: {
     }
   };
 
+  const handleGlobalOptionChange = (descriptor: ProviderGlobalOption, value: string | boolean) => {
+    if (!selectedInstanceId) {
+      return;
+    }
+    void runProviderGlobalOptionChange({
+      instanceId: selectedInstanceId,
+      descriptors: props.globalOptions,
+      change: { id: descriptor.id, value },
+      onSetGlobalOption: (mutation) =>
+        runTrackedProviderGlobalOptionMutation({
+          environmentId: props.environmentId,
+          mutation,
+          updatePending: setPendingGlobalOptionCounts,
+          run: () => props.onSetGlobalOption(mutation),
+        }),
+      onError: (message) => Alert.alert("Could not update provider setting", message),
+    });
+  };
+
   const toggleProvider = (providerKey: string) => {
     setExpandedProviders((current) => {
       const next = new Set(current);
@@ -436,12 +500,16 @@ export function ThreadSettingsSheet(props: {
     });
   };
 
-  const activeDescriptor =
-    submenu?.kind === "descriptor"
-      ? displayedDescriptors.find(
-          (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
+  const activeSection =
+    submenu?.kind === "model-option" || submenu?.kind === "global-option"
+      ? optionSections.find(
+          (section) =>
+            ((section.domain === "model" && submenu.kind === "model-option") ||
+              (section.domain === "global" && submenu.kind === "global-option")) &&
+            section.descriptor?.id === submenu.id,
         )
       : undefined;
+  const activeDescriptor = activeSection?.descriptor;
 
   const submenuContent =
     submenu?.kind === "runtime"
@@ -467,7 +535,11 @@ export function ThreadSettingsSheet(props: {
               selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
               onPress: () => {
                 void Haptics.selectionAsync();
-                handleOptionChange(activeDescriptor.id, choice.id);
+                if (activeSection?.domain === "global") {
+                  handleGlobalOptionChange(activeDescriptor, choice.id);
+                } else {
+                  handleOptionChange(activeDescriptor.id, choice.id);
+                }
                 setSubmenu(null);
               },
             })),
@@ -581,20 +653,21 @@ export function ThreadSettingsSheet(props: {
           <View className="mx-5 h-px bg-border" />
 
           <View style={{ paddingBottom: insets.bottom + 12 }}>
-            {descriptorTemplate.map((entry) => {
-              const live = displayedDescriptors.find(
-                (descriptor) => descriptor.label === entry.label,
-              );
-              if ((live?.type ?? entry.type) === "select") {
+            {optionSections.map((section) => {
+              const descriptor = section.descriptor;
+              if ((descriptor?.type ?? section.type) === "select") {
                 return (
                   <DisclosureRow
-                    key={entry.label}
-                    label={entry.label}
-                    value={live ? getProviderOptionCurrentLabel(live) : undefined}
-                    disabled={!live}
+                    key={`${section.domain}:${section.label}`}
+                    label={section.label}
+                    value={descriptor ? getProviderOptionCurrentLabel(descriptor) : undefined}
+                    disabled={!descriptor || section.pending}
                     onPress={() => {
-                      if (live) {
-                        setSubmenu({ kind: "descriptor", id: live.id });
+                      if (descriptor) {
+                        setSubmenu({
+                          kind: section.domain === "global" ? "global-option" : "model-option",
+                          id: descriptor.id,
+                        });
                       }
                     }}
                   />
@@ -602,13 +675,19 @@ export function ThreadSettingsSheet(props: {
               }
               return (
                 <SwitchRow
-                  key={entry.label}
-                  label={entry.label}
-                  value={live?.type === "boolean" ? (live.currentValue ?? false) : false}
-                  disabled={!live}
+                  key={`${section.domain}:${section.label}`}
+                  label={section.label}
+                  value={
+                    descriptor?.type === "boolean" ? (descriptor.currentValue ?? false) : false
+                  }
+                  disabled={!descriptor || section.pending}
                   onValueChange={(value) => {
-                    if (live) {
-                      handleOptionChange(live.id, value);
+                    if (descriptor) {
+                      if (section.domain === "global") {
+                        handleGlobalOptionChange(descriptor, value);
+                      } else {
+                        handleOptionChange(descriptor.id, value);
+                      }
                     }
                   }}
                 />

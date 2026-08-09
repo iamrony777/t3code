@@ -4,6 +4,7 @@ import {
   TextGenerationError,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { parseCommandCodeNdjsonLine } from "../provider/commandCodeCli.ts";
+import type { CommandCodeReasoningEffortValidator } from "../provider/commandCodeCatalog.ts";
 import { collectStreamAsString } from "../provider/providerSnapshot.ts";
 import {
   buildBranchNamePrompt,
@@ -28,6 +30,7 @@ import {
 } from "./TextGenerationUtils.ts";
 
 const TIMEOUT_MS = 180_000;
+const FORCE_KILL_AFTER = "1 second";
 const isTextGenerationError = Schema.is(TextGenerationError);
 
 type Operation =
@@ -38,6 +41,7 @@ type Operation =
 
 export const makeCommandCodeTextGeneration = Effect.fn("makeCommandCodeTextGeneration")(function* (
   settings: CommandCodeSettings,
+  catalogController: CommandCodeReasoningEffortValidator,
   environment: NodeJS.ProcessEnv = process.env,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -50,6 +54,24 @@ export const makeCommandCodeTextGeneration = Effect.fn("makeCommandCodeTextGener
     readonly modelSelection: ModelSelection;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
+      const selectedReasoningEffort = getModelSelectionStringOptionValue(
+        input.modelSelection,
+        "reasoningEffort",
+      );
+      const reasoningEffort =
+        selectedReasoningEffort === "default" ? undefined : selectedReasoningEffort;
+      if (
+        reasoningEffort !== undefined &&
+        !(yield* catalogController.supportsReasoningEffort(
+          input.modelSelection.model,
+          reasoningEffort,
+        ))
+      ) {
+        return yield* new TextGenerationError({
+          operation: input.operation,
+          detail: `Reasoning effort '${reasoningEffort}' is not supported by Command Code model '${input.modelSelection.model}'.`,
+        });
+      }
       const binaryPath = settings.binaryPath || "command-code";
       const args = [
         "-p",
@@ -64,6 +86,7 @@ export const makeCommandCodeTextGeneration = Effect.fn("makeCommandCodeTextGener
         "dont-ask",
         "--model",
         input.modelSelection.model,
+        ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
       ];
       const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
       const child = yield* spawner.spawn(
@@ -71,6 +94,7 @@ export const makeCommandCodeTextGeneration = Effect.fn("makeCommandCodeTextGener
           cwd: input.cwd,
           env: environment,
           shell: spawnCommand.shell,
+          forceKillAfter: FORCE_KILL_AFTER,
           stdin: { stream: Stream.encodeText(Stream.make(input.prompt)) },
         }),
       );

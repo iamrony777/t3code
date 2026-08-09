@@ -14,8 +14,9 @@ import {
   type ToolLifecycleItemType,
   TurnId,
 } from "@t3tools/contracts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -35,6 +36,7 @@ import {
   type CommandCodeOutputFrame,
   parseCommandCodeNdjsonLine,
 } from "../commandCodeCli.ts";
+import type { CommandCodeReasoningEffortValidator } from "../commandCodeCatalog.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -49,6 +51,7 @@ const RESUME_VERSION = 1 as const;
 const START_TIMEOUT_MS = 10_000;
 
 export interface CommandCodeAdapterOptions {
+  readonly catalogController: CommandCodeReasoningEffortValidator;
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
   readonly startupTimeoutMs?: number;
@@ -81,9 +84,11 @@ interface CommandCodeSessionContext {
   readonly scope: Scope.Closeable;
   session: ProviderSession;
   resumeSessionId: string | undefined;
+  reasoningEffort: string | undefined;
   activeChild: ChildProcessHandle | undefined;
   activeFiber: Fiber.Fiber<void, never> | undefined;
   activeTurn: TurnState | undefined;
+  turnStarting: boolean;
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   stopped: boolean;
 }
@@ -160,23 +165,45 @@ function resultErrorDetail(
 
 export function makeCommandCodeAdapter(
   settings: CommandCodeSettings,
-  options?: CommandCodeAdapterOptions,
+  options: CommandCodeAdapterOptions,
 ): Effect.Effect<
   ProviderAdapterShape<ProviderAdapterError>,
   never,
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Path.Path | Scope.Scope
 > {
   return Effect.gen(function* () {
-    const instanceId = options?.instanceId ?? ProviderInstanceId.make("commandcode");
-    const environment = options?.environment ?? process.env;
+    const instanceId = options.instanceId ?? ProviderInstanceId.make("commandcode");
+    const environment = options.environment ?? process.env;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const crypto = yield* Crypto.Crypto;
     const path = yield* Path.Path;
     const platform = yield* HostProcessPlatform;
-    const startupTimeoutMs = options?.startupTimeoutMs ?? START_TIMEOUT_MS;
+    const startupTimeoutMs = options.startupTimeoutMs ?? START_TIMEOUT_MS;
+    const catalogController = options.catalogController;
     const adapterScope = yield* Scope.Scope;
     const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, CommandCodeSessionContext>();
+
+    const selectedReasoningEffort = (
+      modelSelection: Parameters<typeof getModelSelectionStringOptionValue>[0],
+    ) => {
+      const value = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+      return value === "default" ? undefined : value;
+    };
+
+    const validateReasoningEffort = Effect.fn("CommandCodeAdapter.validateReasoningEffort")(
+      function* (model: string, reasoningEffort: string | undefined) {
+        if (reasoningEffort === undefined) return;
+        const supported = yield* catalogController.supportsReasoningEffort(model, reasoningEffort);
+        if (!supported) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Reasoning effort '${reasoningEffort}' is not supported by Command Code model '${model}'.`,
+          });
+        }
+      },
+    );
 
     const randomUUID = crypto.randomUUIDv4.pipe(
       Effect.mapError(
@@ -675,6 +702,7 @@ export function makeCommandCodeAdapter(
       turn: TurnState,
       prompt: string,
       model: string,
+      reasoningEffort: string | undefined,
       interactionMode: "default" | "plan",
       resumeReady: Deferred.Deferred<string, ProviderAdapterProcessError>,
     ) =>
@@ -683,6 +711,7 @@ export function makeCommandCodeAdapter(
           model,
           runtimeMode: ctx.session.runtimeMode,
           interactionMode,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
           ...(ctx.resumeSessionId ? { resumeSessionId: ctx.resumeSessionId } : {}),
         });
         const binaryPath = settings.binaryPath || "command-code";
@@ -823,10 +852,9 @@ export function makeCommandCodeAdapter(
         const now = DateTime.formatIso(yield* DateTime.now);
         const resumeSessionId = parseResumeCursor(input.resumeCursor);
         const sessionScope = yield* Scope.make("sequential");
-        const model =
-          input.modelSelection?.instanceId === instanceId
-            ? input.modelSelection.model
-            : "deepseek/deepseek-v4-flash";
+        const modelSelection =
+          input.modelSelection?.instanceId === instanceId ? input.modelSelection : undefined;
+        const model = modelSelection?.model ?? "deepseek/deepseek-v4-flash";
         const session: ProviderSession = {
           provider: PROVIDER,
           providerInstanceId: instanceId,
@@ -846,9 +874,11 @@ export function makeCommandCodeAdapter(
           scope: sessionScope,
           session,
           resumeSessionId,
+          reasoningEffort: selectedReasoningEffort(modelSelection),
           activeChild: undefined,
           activeFiber: undefined,
           activeTurn: undefined,
+          turnStarting: false,
           turns: [],
           stopped: false,
         };
@@ -869,103 +899,149 @@ export function makeCommandCodeAdapter(
         return session;
       });
 
-    const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
+    const claimTurn = (
+      input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
+    ): Effect.Effect<
+      { readonly ctx: CommandCodeSessionContext; readonly prompt: string },
+      ProviderAdapterSessionNotFoundError | ProviderAdapterValidationError
+    > =>
+      Effect.suspend<
+        { readonly ctx: CommandCodeSessionContext; readonly prompt: string },
+        ProviderAdapterSessionNotFoundError | ProviderAdapterValidationError,
+        never
+      >(() => {
+        const ctx = sessions.get(input.threadId);
+        if (!ctx || ctx.stopped) {
+          return Effect.fail(
+            new ProviderAdapterSessionNotFoundError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+            }),
+          );
+        }
         if (input.attachments && input.attachments.length > 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Command Code headless mode does not support attachments.",
-          });
+          return Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: "Command Code headless mode does not support attachments.",
+            }),
+          );
         }
         if (!input.input?.trim()) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "input is required and must be non-empty.",
-          });
+          return Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: "input is required and must be non-empty.",
+            }),
+          );
         }
-        if (ctx.activeTurn) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Command Code headless mode does not support mid-turn steering.",
-          });
+        if (ctx.activeTurn || ctx.turnStarting) {
+          return Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: "Command Code headless mode does not support mid-turn steering.",
+            }),
+          );
         }
         if (input.modelSelection && input.modelSelection.instanceId !== instanceId) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: `Model selection belongs to '${input.modelSelection.instanceId}', not '${instanceId}'.`,
-          });
+          return Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: `Model selection belongs to '${input.modelSelection.instanceId}', not '${instanceId}'.`,
+            }),
+          );
         }
-        const turnId = TurnId.make(yield* randomUUID);
-        const turn: TurnState = {
-          turnId,
-          assistantItemId: RuntimeItemId.make(`${turnId}-assistant`),
-          reasoningItemId: RuntimeItemId.make(`${turnId}-reasoning`),
-          assistantStarted: false,
-          assistantCompleted: false,
-          reasoningStarted: false,
-          reasoningCompleted: false,
-          reasoningBlockHasDelta: false,
-          streamedText: "",
-          interrupted: false,
-          tools: new Map(),
-          tasks: new Set(),
-        };
-        const updatedAt = DateTime.formatIso(yield* DateTime.now);
-        const model =
-          input.modelSelection?.model ?? ctx.session.model ?? "deepseek/deepseek-v4-flash";
-        ctx.activeTurn = turn;
-        ctx.session = {
-          ...ctx.session,
-          status: "running",
-          model,
-          activeTurnId: turnId,
-          updatedAt,
-        };
-        ctx.turns.push({ id: turnId, items: [] });
-        yield* publish({
-          type: "turn.started",
-          ...(yield* base(ctx, turnId)),
-          payload: { model },
-        });
-        const resumeReady = yield* Deferred.make<string, ProviderAdapterProcessError>();
-        ctx.activeFiber = yield* runTurn(
-          ctx,
-          turn,
-          input.input.trim(),
-          model,
-          input.interactionMode ?? "default",
-          resumeReady,
-        ).pipe(Effect.forkIn(ctx.scope));
-        const sessionId = yield* Deferred.await(resumeReady).pipe(
-          Effect.timeoutOption(startupTimeoutMs),
-          Effect.flatMap((option) =>
-            option._tag === "Some"
-              ? Effect.succeed(option.value)
-              : Effect.fail(
-                  new ProviderAdapterProcessError({
-                    provider: PROVIDER,
-                    threadId: ctx.threadId,
-                    detail: "Command Code did not report a session id before startup timed out.",
-                  }),
-                ),
-          ),
-          Effect.tapError(() =>
-            ctx.activeChild
-              ? terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore)
-              : Effect.void,
-          ),
-        );
-        return {
-          threadId: input.threadId,
-          turnId,
-          resumeCursor: { schemaVersion: RESUME_VERSION, sessionId },
-        };
+        ctx.turnStarting = true;
+        return Effect.succeed({ ctx, prompt: input.input.trim() });
       });
+
+    const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
+      Effect.acquireUseRelease(
+        claimTurn(input),
+        ({ ctx, prompt }) =>
+          Effect.gen(function* () {
+            const turnId = TurnId.make(yield* randomUUID);
+            const turn: TurnState = {
+              turnId,
+              assistantItemId: RuntimeItemId.make(`${turnId}-assistant`),
+              reasoningItemId: RuntimeItemId.make(`${turnId}-reasoning`),
+              assistantStarted: false,
+              assistantCompleted: false,
+              reasoningStarted: false,
+              reasoningCompleted: false,
+              reasoningBlockHasDelta: false,
+              streamedText: "",
+              interrupted: false,
+              tools: new Map(),
+              tasks: new Set(),
+            };
+            const updatedAt = DateTime.formatIso(yield* DateTime.now);
+            const model =
+              input.modelSelection?.model ?? ctx.session.model ?? "deepseek/deepseek-v4-flash";
+            const reasoningEffort = input.modelSelection
+              ? selectedReasoningEffort(input.modelSelection)
+              : ctx.reasoningEffort;
+            yield* validateReasoningEffort(model, reasoningEffort);
+            ctx.reasoningEffort = reasoningEffort;
+            ctx.activeTurn = turn;
+            ctx.session = {
+              ...ctx.session,
+              status: "running",
+              model,
+              activeTurnId: turnId,
+              updatedAt,
+            };
+            ctx.turns.push({ id: turnId, items: [] });
+            yield* publish({
+              type: "turn.started",
+              ...(yield* base(ctx, turnId)),
+              payload: { model },
+            });
+            const resumeReady = yield* Deferred.make<string, ProviderAdapterProcessError>();
+            ctx.activeFiber = yield* runTurn(
+              ctx,
+              turn,
+              prompt,
+              model,
+              reasoningEffort,
+              input.interactionMode ?? "default",
+              resumeReady,
+            ).pipe(Effect.forkIn(ctx.scope));
+            const sessionId = yield* Deferred.await(resumeReady).pipe(
+              Effect.timeoutOption(startupTimeoutMs),
+              Effect.flatMap((option) =>
+                option._tag === "Some"
+                  ? Effect.succeed(option.value)
+                  : Effect.fail(
+                      new ProviderAdapterProcessError({
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        detail:
+                          "Command Code did not report a session id before startup timed out.",
+                      }),
+                    ),
+              ),
+              Effect.tapError(() =>
+                ctx.activeChild
+                  ? terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore)
+                  : Effect.void,
+              ),
+            );
+            return {
+              threadId: input.threadId,
+              turnId,
+              resumeCursor: { schemaVersion: RESUME_VERSION, sessionId },
+            };
+          }),
+        ({ ctx }) =>
+          Effect.sync(() => {
+            ctx.turnStarting = false;
+          }),
+      );
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
       threadId,

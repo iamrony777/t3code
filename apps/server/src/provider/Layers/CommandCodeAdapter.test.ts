@@ -8,6 +8,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -15,12 +16,27 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
+import type {
+  CommandCodeEffortCapability,
+  CommandCodeReasoningEffortValidator,
+} from "../commandCodeCatalog.ts";
 import { makeCommandCodeAdapter } from "./CommandCodeAdapter.ts";
 
 const decodeSettings = Schema.decodeSync(CommandCodeSettings);
 const provider = ProviderDriverKind.make("commandcode");
 const instanceId = ProviderInstanceId.make("commandcode");
+const effortValidator = (
+  capabilities: Readonly<Record<string, CommandCodeEffortCapability>> = {},
+): CommandCodeReasoningEffortValidator => ({
+  supportsReasoningEffort: (model, reasoningEffort) => {
+    const capability = capabilities[model];
+    return Effect.succeed(
+      capability?.kind === "adjustable" && capability.values.includes(reasoningEffort),
+    );
+  },
+});
 
 it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
   it.effect("streams a turn and resumes the next turn by explicit session id", () =>
@@ -64,6 +80,9 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
+          catalogController: effortValidator({
+            "deepseek/deepseek-v4-flash": { kind: "adjustable", values: ["high", "max"] },
+          }),
           environment: {
             ...process.env,
             COMMAND_CODE_ARGS_LOG: argsLog,
@@ -85,7 +104,11 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           threadId,
           cwd: dir,
           runtimeMode: "approval-required",
-          modelSelection: { instanceId, model: "deepseek/deepseek-v4-flash" },
+          modelSelection: {
+            instanceId,
+            model: "deepseek/deepseek-v4-flash",
+            options: [{ id: "reasoningEffort", value: "max" }],
+          },
         });
         const first = yield* adapter.sendTurn({
           threadId,
@@ -154,7 +177,9 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const argumentLines = (yield* fs.readFileString(argsLog)).trim().split("\n");
         expect(argumentLines[0]).toContain("--permission-mode dont-ask");
+        expect(argumentLines[0]?.match(/--effort max/g)).toHaveLength(1);
         expect(argumentLines[1]).toContain("--resume session-123");
+        expect(argumentLines[1]?.match(/--effort max/g)).toHaveLength(1);
         expect(argumentLines[1]).not.toContain("--continue");
         expect((yield* fs.readFileString(stdinLog)).trim().split("\n")).toEqual([
           "first prompt",
@@ -185,6 +210,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
+          catalogController: effortValidator(),
         });
         const threadId = ThreadId.make("thread-command-code-interrupt");
         const eventsFiber = yield* adapter.streamEvents.pipe(
@@ -235,6 +261,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
+          catalogController: effortValidator(),
           startupTimeoutMs: 100,
         });
         const threadId = ThreadId.make("thread-command-code-startup-timeout");
@@ -297,6 +324,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
+          catalogController: effortValidator(),
         });
         const threadId = ThreadId.make("thread-command-code-startup-error");
         const terminalFiber = yield* adapter.streamEvents.pipe(
@@ -329,7 +357,10 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
   it.effect("rejects attachments, steering, approvals, and rollback explicitly", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const adapter = yield* makeCommandCodeAdapter(decodeSettings({}), { instanceId });
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
         const threadId = ThreadId.make("thread-command-code-validation");
         yield* adapter.startSession({
           provider,
@@ -368,6 +399,138 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const rollbackExit = yield* adapter.rollbackThread(threadId, 1).pipe(Effect.exit);
         expect(rollbackExit._tag).toBe("Failure");
+      }),
+    ),
+  );
+
+  it.effect("rejects invalid reasoning effort selections before spawning", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        let spawnCalls = 0;
+        const countingSpawner = ChildProcessSpawner.make((command) => {
+          spawnCalls += 1;
+          return delegate.spawn(command);
+        });
+        const cases = [
+          {
+            model: "stale-model",
+            capability: { kind: "adjustable", values: ["high"] } as const,
+          },
+          { model: "fixed-model", capability: { kind: "fixed" } as const },
+          { model: "unknown-model", capability: { kind: "unknown" } as const },
+          { model: "missing-model", capability: undefined },
+        ];
+
+        for (const testCase of cases) {
+          const capabilities = testCase.capability ? { [testCase.model]: testCase.capability } : {};
+          const adapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
+            instanceId,
+            catalogController: effortValidator(capabilities),
+          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, countingSpawner));
+          const threadId = ThreadId.make(`thread-command-code-${testCase.model}`);
+          yield* adapter.startSession({
+            provider,
+            providerInstanceId: instanceId,
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+            modelSelection: {
+              instanceId,
+              model: testCase.model,
+              options: [{ id: "reasoningEffort", value: "max" }],
+            },
+          });
+
+          const error = yield* adapter.sendTurn({ threadId, input: "do work" }).pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "ProviderAdapterValidationError",
+            issue: `Reasoning effort 'max' is not supported by Command Code model '${testCase.model}'.`,
+          });
+        }
+
+        expect(spawnCalls).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("admits only one concurrent turn and releases a failed validation claim", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-admission-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-admitted"}}\'',
+            'printf \'%s\\n\' \'{"type":"result","subtype":"success","sessionId":"session-admitted","usage":{},"durationMs":5,"finalText":"done"}\'',
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        let spawnCalls = 0;
+        const countingSpawner = ChildProcessSpawner.make((command) => {
+          spawnCalls += 1;
+          return delegate.spawn(command);
+        });
+        const validationStarted = yield* Deferred.make<void>();
+        const releaseValidation = yield* Deferred.make<void>();
+        let validationCalls = 0;
+        const catalogController: CommandCodeReasoningEffortValidator = {
+          supportsReasoningEffort: () =>
+            Effect.gen(function* () {
+              validationCalls += 1;
+              if (validationCalls === 1) {
+                yield* Deferred.succeed(validationStarted, undefined);
+                yield* Deferred.await(releaseValidation);
+                return false;
+              }
+              return true;
+            }),
+        };
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController,
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, countingSpawner));
+        const threadId = ThreadId.make("thread-command-code-admission");
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        const turnInput = {
+          threadId,
+          input: "do work",
+          modelSelection: {
+            instanceId,
+            model: "adjustable-model",
+            options: [{ id: "reasoningEffort", value: "max" }] as const,
+          },
+        };
+
+        const first = yield* adapter.sendTurn(turnInput).pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(validationStarted);
+        const concurrent = yield* adapter.sendTurn(turnInput).pipe(Effect.flip);
+        expect(concurrent).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          issue: "Command Code headless mode does not support mid-turn steering.",
+        });
+        expect(validationCalls).toBe(1);
+        expect(spawnCalls).toBe(0);
+
+        yield* Deferred.succeed(releaseValidation, undefined);
+        expect((yield* Fiber.join(first))._tag).toBe("Failure");
+        yield* adapter.sendTurn(turnInput);
+
+        expect(validationCalls).toBe(2);
+        expect(spawnCalls).toBe(1);
       }),
     ),
   );

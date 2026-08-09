@@ -26,6 +26,7 @@ import { makeCommandCodeAdapter } from "../Layers/CommandCodeAdapter.ts";
 import {
   buildInitialCommandCodeProviderSnapshot,
   type CommandCodeCatalogSeed,
+  type CommandCodeProviderProbeResult,
   enrichCommandCodeProviderSnapshot,
   probeCommandCodeProviderStatus,
 } from "../Layers/CommandCodeProvider.ts";
@@ -72,6 +73,27 @@ class CommandCodeCatalogFetchError extends Data.TaggedError("CommandCodeCatalogF
 }> {}
 
 const PROBE_FORCE_KILL_AFTER = "1 second";
+
+interface CommandCodeInventoryController {
+  readonly activateInventory: (
+    identity: CommandCodeCatalogSeed["identity"],
+    cliModels: CommandCodeCatalogSeed["cliModels"],
+  ) => Effect.Effect<void>;
+  readonly clearInventory: () => Effect.Effect<void>;
+}
+
+export const activateCommandCodeCatalogForProbeResult = Effect.fn(
+  "activateCommandCodeCatalogForProbeResult",
+)(function* (
+  controller: CommandCodeInventoryController,
+  result: Pick<CommandCodeProviderProbeResult, "catalogSeed">,
+) {
+  if (result.catalogSeed === undefined) {
+    yield* controller.clearInventory();
+    return;
+  }
+  yield* controller.activateInventory(result.catalogSeed.identity, result.catalogSeed.cliModels);
+});
 
 export const makeCommandCodeEffortProbeCommand = Effect.fn("makeCommandCodeEffortProbeCommand")(
   function* (input: CommandCodeEffortProbeInput, environment: NodeJS.ProcessEnv) {
@@ -203,15 +225,25 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
 
       const adapter = yield* makeCommandCodeAdapter(effectiveConfig, {
         instanceId,
+        catalogController,
         environment: processEnv,
       });
-      const textGeneration = yield* makeCommandCodeTextGeneration(effectiveConfig, processEnv);
+      const textGeneration = yield* makeCommandCodeTextGeneration(
+        effectiveConfig,
+        catalogController,
+        processEnv,
+      );
       const checkProvider = probeCommandCodeProviderStatus(
         effectiveConfig,
         instanceId,
         processEnv,
       ).pipe(
-        Effect.tap((result) => Ref.set(catalogSeedRef, result.catalogSeed)),
+        Effect.tap((result) =>
+          Effect.gen(function* () {
+            yield* Ref.set(catalogSeedRef, result.catalogSeed);
+            yield* activateCommandCodeCatalogForProbeResult(catalogController, result);
+          }),
+        ),
         Effect.map((result) => stampIdentity(result.snapshot)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),

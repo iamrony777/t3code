@@ -290,6 +290,140 @@ const fsDependencies = (
 });
 
 describe("Command Code catalog cache", () => {
+  it.effect("validates reasoning effort against the current exact model capability", () =>
+    Effect.gen(function* () {
+      const controller = yield* createCommandCodeCatalogController({
+        providerStatusCacheDir: "/cache",
+        joinPath: (...parts) => parts.join("/"),
+        readFile: () => Effect.fail("missing"),
+        writeFileAtomically: () => Effect.void,
+        fetchApiDocument: () => Effect.succeed(apiDocument([])),
+        probeEffort: (input) => {
+          const model = input.args[1];
+          const stderr =
+            model === "adjustable"
+              ? 'Unknown effort "__t3_invalid_effort_probe__". Supported: high, max.'
+              : model === "fixed"
+                ? "fixed has no adjustable reasoning effort."
+                : "unrecognized probe response";
+          return Effect.succeed({ exitCode: 1, stdout: "", stderr });
+        },
+      });
+      yield* controller.refresh(identity, [
+        cliModel("adjustable"),
+        cliModel("fixed"),
+        cliModel("unknown"),
+      ]);
+
+      const valid = yield* controller.supportsReasoningEffort("adjustable", "max");
+      const stale = yield* controller.supportsReasoningEffort("adjustable", "ultra");
+      const fixed = yield* controller.supportsReasoningEffort("fixed", "max");
+      const unknown = yield* controller.supportsReasoningEffort("unknown", "max");
+      const missing = yield* controller.supportsReasoningEffort("missing", "max");
+
+      expect(valid).toBe(true);
+      expect(stale).toBe(false);
+      expect(fixed).toBe(false);
+      expect(unknown).toBe(false);
+      expect(missing).toBe(false);
+    }),
+  );
+
+  it.effect("activates only the current provider identity and inventory", () =>
+    Effect.gen(function* () {
+      const controller = yield* createCommandCodeCatalogController({
+        providerStatusCacheDir: "/cache",
+        joinPath: (...parts) => parts.join("/"),
+        readFile: () => Effect.fail("missing"),
+        writeFileAtomically: () => Effect.void,
+        fetchApiDocument: () => Effect.succeed(apiDocument([])),
+        probeEffort: () =>
+          Effect.succeed({
+            exitCode: 1,
+            stdout: "",
+            stderr: 'Unknown effort "__t3_invalid_effort_probe__". Supported: high, max.',
+          }),
+      });
+
+      expect(yield* controller.supportsReasoningEffort("model", "max")).toBe(false);
+      yield* controller.activateInventory(identity, [cliModel("model")]);
+      expect(yield* controller.supportsReasoningEffort("model", "max")).toBe(false);
+      yield* controller.refresh(identity, [cliModel("model")]);
+      expect(yield* controller.supportsReasoningEffort("model", "max")).toBe(true);
+
+      const changedIdentity = { ...identity, cliVersion: "2.0.0" };
+      yield* controller.activateInventory(changedIdentity, [cliModel("model")]);
+      expect(yield* controller.supportsReasoningEffort("model", "max")).toBe(false);
+      expect((yield* controller.getCatalog())[0]?.effort).toEqual({ kind: "unknown" });
+    }),
+  );
+
+  it.effect("removes models outside the activated inventory and clears when no seed exists", () =>
+    Effect.gen(function* () {
+      const controller = yield* createCommandCodeCatalogController({
+        providerStatusCacheDir: "/cache",
+        joinPath: (...parts) => parts.join("/"),
+        readFile: () => Effect.fail("missing"),
+        writeFileAtomically: () => Effect.void,
+        fetchApiDocument: () => Effect.succeed(apiDocument([])),
+        probeEffort: () =>
+          Effect.succeed({
+            exitCode: 1,
+            stdout: "",
+            stderr: 'Unknown effort "__t3_invalid_effort_probe__". Supported: max.',
+          }),
+      });
+      yield* controller.activateInventory(identity, [cliModel("removed"), cliModel("current")]);
+      yield* controller.refresh(identity, [cliModel("removed"), cliModel("current")]);
+
+      yield* controller.activateInventory(identity, [cliModel("current")]);
+      expect(yield* controller.supportsReasoningEffort("removed", "max")).toBe(false);
+      expect(yield* controller.supportsReasoningEffort("current", "max")).toBe(true);
+      expect((yield* controller.getCatalog()).map((model) => model.slug)).toEqual(["current"]);
+
+      yield* controller.clearInventory();
+      expect(yield* controller.supportsReasoningEffort("current", "max")).toBe(false);
+      expect(yield* controller.getCatalog()).toEqual([]);
+    }),
+  );
+
+  it.effect("does not restore a stale catalog after the active generation changes", () =>
+    Effect.gen(function* () {
+      const probeStarted = yield* Deferred.make<void>();
+      const releaseProbe = yield* Deferred.make<void>();
+      const controller = yield* createCommandCodeCatalogController({
+        providerStatusCacheDir: "/cache",
+        joinPath: (...parts) => parts.join("/"),
+        readFile: () => Effect.fail("missing"),
+        writeFileAtomically: () => Effect.void,
+        fetchApiDocument: () => Effect.succeed(apiDocument([])),
+        probeEffort: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(probeStarted, undefined);
+            yield* Deferred.await(releaseProbe);
+            return {
+              exitCode: 1,
+              stdout: "",
+              stderr: 'Unknown effort "__t3_invalid_effort_probe__". Supported: max.',
+            };
+          }),
+      });
+      yield* controller.activateInventory(identity, [cliModel("old-model")]);
+      const staleRefresh = yield* controller
+        .refresh(identity, [cliModel("old-model")])
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(probeStarted);
+
+      const changedIdentity = { ...identity, resolvedBinaryPath: "/opt/bin/command-code-v2" };
+      yield* controller.activateInventory(changedIdentity, [cliModel("new-model")]);
+      yield* Deferred.succeed(releaseProbe, undefined);
+      yield* Fiber.join(staleRefresh);
+
+      expect(yield* controller.supportsReasoningEffort("old-model", "max")).toBe(false);
+      expect((yield* controller.getCatalog()).map((model) => model.slug)).toEqual(["new-model"]);
+    }),
+  );
+
   it("resolves the instance-scoped provider status cache path", () => {
     expect(
       commandCodeCatalogCachePath("/cache/providers", "instance-1", (...parts) => parts.join("/")),

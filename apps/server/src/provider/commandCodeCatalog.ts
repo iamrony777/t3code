@@ -49,6 +49,13 @@ export type CommandCodeEffortCapability =
   | { readonly kind: "fixed" }
   | { readonly kind: "unknown" };
 
+export interface CommandCodeReasoningEffortValidator {
+  readonly supportsReasoningEffort: (
+    modelSlug: string,
+    reasoningEffort: string,
+  ) => Effect.Effect<boolean>;
+}
+
 export interface CommandCodeCatalogModel extends CommandCodeModel {
   readonly contextWindow?: number | undefined;
   readonly effort: CommandCodeEffortCapability;
@@ -103,6 +110,13 @@ export interface CommandCodeCatalogCache {
   readonly apiFetchedAt: DateTime.Utc;
   readonly apiModels: ReadonlyArray<CommandCodeApiModel>;
   readonly efforts: Readonly<Record<string, CommandCodeEffortCapability>>;
+}
+
+interface CommandCodeValidationCatalogState {
+  readonly managed: boolean;
+  readonly identity?: CommandCodeCatalogIdentity | undefined;
+  readonly inventoryKeys: ReadonlyArray<string>;
+  readonly catalog: ReadonlyArray<CommandCodeCatalogModel>;
 }
 
 const EffortValueWire = Schema.String.check(Schema.isPattern(/^[a-z0-9_-]{1,32}$/));
@@ -295,9 +309,48 @@ const isApiCacheFresh = (cache: CommandCodeCatalogCache, now: DateTime.Utc): boo
   return age >= 0 && age < Duration.toMillis(COMMAND_CODE_CATALOG_API_FRESHNESS);
 };
 
+const catalogIdentityMatches = (
+  left: CommandCodeCatalogIdentity | undefined,
+  right: CommandCodeCatalogIdentity,
+): boolean =>
+  left?.instanceId === right.instanceId &&
+  left.resolvedBinaryPath === right.resolvedBinaryPath &&
+  left.cliVersion === right.cliVersion;
+
+const commandCodeInventoryKeys = (
+  cliModels: ReadonlyArray<CommandCodeModel>,
+): ReadonlyArray<string> =>
+  Array.from(new Set(cliModels.map((model) => normalizeCommandCodeModelKey(model.slug)))).sort();
+
+const inventoryMatches = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
+  left.length === right.length && left.every((key, index) => key === right[index]);
+
+const retainCatalogCapabilities = (
+  cliModels: ReadonlyArray<CommandCodeModel>,
+  catalog: ReadonlyArray<CommandCodeCatalogModel>,
+): ReadonlyArray<CommandCodeCatalogModel> => {
+  const currentByKey = new Map(
+    catalog.map((model) => [normalizeCommandCodeModelKey(model.slug), model] as const),
+  );
+  return cliModels.map((model) => {
+    const current = currentByKey.get(normalizeCommandCodeModelKey(model.slug));
+    if (current === undefined) return { ...model, effort: { kind: "unknown" } };
+    return {
+      ...model,
+      name: current.name,
+      ...(current.contextWindow !== undefined ? { contextWindow: current.contextWindow } : {}),
+      effort: current.effort,
+    };
+  });
+};
+
 export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCatalogController")(
   function* <DependencyError>(dependencies: CommandCodeCatalogDependencies<DependencyError>) {
-    const catalogRef = yield* Ref.make<ReadonlyArray<CommandCodeCatalogModel>>([]);
+    const validationCatalogRef = yield* Ref.make<CommandCodeValidationCatalogState>({
+      managed: false,
+      inventoryKeys: [],
+      catalog: [],
+    });
     const cacheRef = yield* Ref.make<CommandCodeCatalogCache | undefined>(undefined);
     const cachePath = (identity: CommandCodeCatalogIdentity): string =>
       commandCodeCatalogCachePath(
@@ -328,6 +381,44 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
       }
       return diskCache;
     });
+
+    const publishValidationCatalog = (
+      identity: CommandCodeCatalogIdentity,
+      cliModels: ReadonlyArray<CommandCodeModel>,
+      catalog: ReadonlyArray<CommandCodeCatalogModel>,
+    ) => {
+      const inventoryKeys = commandCodeInventoryKeys(cliModels);
+      return Ref.update(validationCatalogRef, (state) => {
+        if (
+          state.managed &&
+          (!catalogIdentityMatches(state.identity, identity) ||
+            !inventoryMatches(state.inventoryKeys, inventoryKeys))
+        ) {
+          return state;
+        }
+        return { ...state, identity, inventoryKeys, catalog };
+      });
+    };
+
+    const activateInventory = (
+      identity: CommandCodeCatalogIdentity,
+      cliModels: ReadonlyArray<CommandCodeModel>,
+    ) =>
+      Ref.update(validationCatalogRef, (state) => ({
+        managed: true,
+        identity,
+        inventoryKeys: commandCodeInventoryKeys(cliModels),
+        catalog: catalogIdentityMatches(state.identity, identity)
+          ? retainCatalogCapabilities(cliModels, state.catalog)
+          : buildCommandCodeCatalog(cliModels, [], {}),
+      }));
+
+    const clearInventory = () =>
+      Ref.set(validationCatalogRef, {
+        managed: true,
+        inventoryKeys: [],
+        catalog: [],
+      });
 
     const probeOne = Effect.fn("CommandCodeCatalog.probeOne")(function* (
       identity: CommandCodeCatalogIdentity,
@@ -366,7 +457,7 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
         cache?.apiModels ?? [],
         cache?.efforts ?? {},
       );
-      yield* Ref.set(catalogRef, catalog);
+      yield* publishValidationCatalog(identity, cliModels, catalog);
       return catalog;
     });
 
@@ -436,7 +527,7 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
       }
 
       const catalog = buildCommandCodeCatalog(cliModels, apiModels, efforts);
-      yield* Ref.set(catalogRef, catalog);
+      yield* publishValidationCatalog(identity, cliModels, catalog);
 
       if (hasApiDocument || Object.keys(efforts).length > 0) {
         const nextCache: CommandCodeCatalogCache = {
@@ -468,24 +559,33 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
       return catalog;
     });
 
-    const getCatalog = () => Ref.get(catalogRef);
+    const getCatalog = () =>
+      Ref.get(validationCatalogRef).pipe(Effect.map((state) => state.catalog));
 
     const getModelCapability = (modelSlug: string) => {
       const key = normalizeCommandCodeModelKey(modelSlug);
-      return Ref.get(catalogRef).pipe(
+      return Ref.get(validationCatalogRef).pipe(
         Effect.map(
-          (catalog) =>
-            catalog.find((model) => normalizeCommandCodeModelKey(model.slug) === key)?.effort,
+          (state) =>
+            state.catalog.find((model) => normalizeCommandCodeModelKey(model.slug) === key)?.effort,
         ),
       );
     };
 
+    const supportsReasoningEffort = (modelSlug: string, reasoningEffort: string) =>
+      getModelCapability(modelSlug).pipe(
+        Effect.map(
+          (capability) =>
+            capability?.kind === "adjustable" && capability.values.includes(reasoningEffort),
+        ),
+      );
+
     const getModelContextWindow = (modelSlug: string) => {
       const key = normalizeCommandCodeModelKey(modelSlug);
-      return Ref.get(catalogRef).pipe(
+      return Ref.get(validationCatalogRef).pipe(
         Effect.map(
-          (catalog) =>
-            catalog.find((model) => normalizeCommandCodeModelKey(model.slug) === key)
+          (state) =>
+            state.catalog.find((model) => normalizeCommandCodeModelKey(model.slug) === key)
               ?.contextWindow,
         ),
       );
@@ -493,11 +593,14 @@ export const createCommandCodeCatalogController = Effect.fn("createCommandCodeCa
 
     return {
       cachePath,
+      activateInventory,
+      clearInventory,
       readCache,
       catalogFromCache,
       refresh,
       getCatalog,
       getModelCapability,
+      supportsReasoningEffort,
       getModelContextWindow,
     } as const;
   },

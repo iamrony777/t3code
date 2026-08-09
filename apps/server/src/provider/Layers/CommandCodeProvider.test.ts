@@ -15,6 +15,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ServerConfig from "../../config.ts";
 import type { CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
 import {
+  activateCommandCodeCatalogForProbeResult,
   makeCommandCodeCatalogControllerForProvider,
   makeCommandCodeEffortProbeCommand,
 } from "../Drivers/CommandCodeDriver.ts";
@@ -276,6 +277,38 @@ describe("Command Code probe commands", () => {
 });
 
 describe("makeCommandCodeCatalogControllerForProvider", () => {
+  it.effect("activates every discovered inventory and clears results without a seed", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const controller = {
+        activateInventory: (
+          identity: { readonly cliVersion: string },
+          models: ReadonlyArray<unknown>,
+        ) =>
+          Effect.sync(() => {
+            calls.push(`activate:${identity.cliVersion}:${models.length}`);
+          }),
+        clearInventory: () =>
+          Effect.sync(() => {
+            calls.push("clear");
+          }),
+      };
+      const seed = {
+        identity: {
+          instanceId: "commandcode",
+          resolvedBinaryPath: "/bin/command-code",
+          cliVersion: "1.15.1",
+        },
+        cliModels: [{ slug: "model", name: "Model", subProvider: "Command Code" }],
+      };
+
+      yield* activateCommandCodeCatalogForProbeResult(controller, { catalogSeed: seed });
+      yield* activateCommandCodeCatalogForProbeResult(controller, {});
+
+      expect(calls).toEqual(["activate:1.15.1:1", "clear"]);
+    }),
+  );
+
   it.effect("uses server cache, bounded HTTP, atomic writes, and a closed-stdin effort probe", () =>
     Effect.scoped(
       Effect.gen(function* () {

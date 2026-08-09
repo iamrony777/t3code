@@ -122,15 +122,56 @@ describe("buildCommandCodeTurnArgs", () => {
     expect(args).not.toContain("--continue");
   });
 
-  it("maps plan and full-access modes to documented flags", () => {
-    expect(buildCommandCodeTurnArgs({ ...base, interactionMode: "plan" })).toContain("--plan");
-    expect(buildCommandCodeTurnArgs({ ...base, runtimeMode: "full-access" })).toContain("--yolo");
+  it.each([
+    {
+      name: "legacy plan",
+      input: { ...base, interactionMode: "plan" as const },
+      modeArgs: ["--plan"],
+    },
+    {
+      name: "full-access",
+      input: { ...base, runtimeMode: "full-access" as const },
+      modeArgs: ["--yolo"],
+    },
+    {
+      name: "auto",
+      input: { ...base, runtimeMode: "auto" as const },
+      modeArgs: ["--auto-accept"],
+    },
+    {
+      name: "auto-accept-edits",
+      input: { ...base, runtimeMode: "auto-accept-edits" as const },
+      modeArgs: ["--auto-accept"],
+    },
+    {
+      name: "approval-required",
+      input: base,
+      modeArgs: ["--permission-mode", "dont-ask"],
+    },
+  ])("maps $name to the exact Command Code mode arguments", ({ input, modeArgs }) => {
+    expect(buildCommandCodeTurnArgs(input)).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--skip-onboarding",
+      "--no-auto-update",
+      "--model",
+      "deepseek/deepseek-v4-flash",
+      ...modeArgs,
+    ]);
   });
 
-  it("maps T3 automatic modes to Command Code auto-accept", () => {
-    for (const runtimeMode of ["auto", "auto-accept-edits"] as const) {
-      expect(buildCommandCodeTurnArgs({ ...base, runtimeMode })).toContain("--auto-accept");
-    }
+  it("omits missing and default reasoning effort", () => {
+    expect(buildCommandCodeTurnArgs(base)).not.toContain("--effort");
+    expect(buildCommandCodeTurnArgs({ ...base, reasoningEffort: "default" })).not.toContain(
+      "--effort",
+    );
+  });
+
+  it("emits a non-default reasoning effort exactly once", () => {
+    const args = buildCommandCodeTurnArgs({ ...base, reasoningEffort: "max" });
+    expect(args.filter((arg) => arg === "--effort")).toHaveLength(1);
+    expect(args).toContain("max");
   });
 });
 

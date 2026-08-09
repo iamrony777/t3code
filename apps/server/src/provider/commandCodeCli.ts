@@ -101,6 +101,7 @@ export function buildCommandCodeTurnArgs(input: {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly resumeSessionId?: string | undefined;
+  readonly reasoningEffort?: string | undefined;
 }): ReadonlyArray<string> {
   const args = [
     "-p",
@@ -111,6 +112,9 @@ export function buildCommandCodeTurnArgs(input: {
     "--model",
     input.model,
     ...(input.resumeSessionId ? ["--resume", input.resumeSessionId] : []),
+    ...(input.reasoningEffort && input.reasoningEffort !== "default"
+      ? ["--effort", input.reasoningEffort]
+      : []),
   ];
 
   if (input.interactionMode === "plan") return [...args, "--plan"];

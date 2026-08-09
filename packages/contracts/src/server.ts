@@ -18,7 +18,11 @@ import {
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
-import { ModelCapabilities } from "./model.ts";
+import {
+  ModelCapabilities,
+  ProviderOptionDescriptor,
+  ProviderOptionSelectionValue,
+} from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -95,6 +99,9 @@ export const ServerProviderSkill = Schema.Struct({
   shortDescription: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
+
+export const ProviderGlobalOption = ProviderOptionDescriptor;
+export type ProviderGlobalOption = typeof ProviderGlobalOption.Type;
 
 /**
  * Availability of a configured provider instance from the runtime's POV.
@@ -188,6 +195,9 @@ export const ServerProvider = Schema.Struct({
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
   models: Schema.Array(ServerProviderModel),
+  globalOptions: Schema.Array(ProviderGlobalOption).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -585,6 +595,22 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
   providers: ServerProviders,
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
+
+export const ServerProviderGlobalOptionSetInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  optionId: TrimmedNonEmptyString,
+  value: ProviderOptionSelectionValue,
+});
+export type ServerProviderGlobalOptionSetInput = typeof ServerProviderGlobalOptionSetInput.Type;
+
+export class ServerProviderGlobalOptionSetError extends Schema.TaggedErrorClass<ServerProviderGlobalOptionSetError>()(
+  "ServerProviderGlobalOptionSetError",
+  {
+    instanceId: ProviderInstanceId,
+    optionId: TrimmedNonEmptyString,
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,

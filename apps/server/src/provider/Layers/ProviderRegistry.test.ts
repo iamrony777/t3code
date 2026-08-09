@@ -539,6 +539,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-03-25T00:00:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           },
@@ -552,6 +553,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-03-25T00:00:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           },
@@ -586,6 +588,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               }),
             },
           ],
+          globalOptions: [],
           slashCommands: [],
           skills: [],
         } as const satisfies ServerProvider;
@@ -626,6 +629,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               capabilities: null,
             },
           ],
+          globalOptions: [],
           slashCommands: [],
           skills: [],
         } as const satisfies ServerProvider;
@@ -667,6 +671,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               capabilities: null,
             },
           ],
+          globalOptions: [],
           slashCommands: [],
           skills: [],
         } as const satisfies ServerProvider;
@@ -710,6 +715,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               capabilities: null,
             },
           ],
+          globalOptions: [],
           slashCommands: [],
           skills: [],
         } as const satisfies ServerProvider;
@@ -796,6 +802,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               }),
             },
           ],
+          globalOptions: [],
           slashCommands: [],
           skills: [],
         } as const satisfies ServerProvider;
@@ -834,6 +841,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             version: null,
             message: "Checking Codex provider status.",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;
@@ -920,6 +928,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               },
             ],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           },
@@ -933,6 +942,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-04-14T00:00:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           },
@@ -984,6 +994,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               },
             ],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;
@@ -1105,6 +1116,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   capabilities: null,
                 },
               ],
+              globalOptions: [],
               slashCommands: [],
               skills: [],
             } as const satisfies ServerProvider;
@@ -1226,6 +1238,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-04-29T10:00:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;
@@ -1306,6 +1319,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-04-29T10:00:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;
@@ -1319,6 +1333,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-04-29T10:01:00.000Z",
             version: "1.0.0",
             models: [],
+            globalOptions: [],
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;

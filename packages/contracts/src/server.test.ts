@@ -1,14 +1,21 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
+import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ProviderGlobalOption,
   ServerConfig,
   ServerProvider,
+  ServerProviderGlobalOptionSetError,
+  ServerProviderGlobalOptionSetInput,
   ServerProviders,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
+const decodeProviderGlobalOption = Schema.decodeUnknownSync(ProviderGlobalOption);
+const decodeServerProviderGlobalOptionSetInput = (input: unknown) =>
+  Schema.decodeUnknownSync(ServerProviderGlobalOptionSetInput)(input);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
@@ -43,8 +50,89 @@ describe("ServerProvider", () => {
 
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
+    expect(parsed.globalOptions).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
+  });
+
+  it("decodes select and boolean provider-global options", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      globalOptions: [
+        {
+          id: "account",
+          type: "select",
+          label: "Account",
+          options: [
+            { id: "personal", label: "Personal", isDefault: true },
+            { id: "work", label: "Work", description: "Company account" },
+          ],
+          currentValue: "personal",
+        },
+        {
+          id: "fastMode",
+          type: "boolean",
+          label: "Fast mode",
+          description: "Prefer faster responses",
+          currentValue: true,
+        },
+      ],
+    });
+
+    expect(parsed.globalOptions).toEqual([
+      {
+        id: "account",
+        type: "select",
+        label: "Account",
+        options: [
+          { id: "personal", label: "Personal", isDefault: true },
+          { id: "work", label: "Work", description: "Company account" },
+        ],
+        currentValue: "personal",
+      },
+      {
+        id: "fastMode",
+        type: "boolean",
+        label: "Fast mode",
+        description: "Prefer faster responses",
+        currentValue: true,
+      },
+    ]);
+  });
+
+  it("rejects descriptors with empty ids or labels and select choices with empty fields", () => {
+    const invalidDescriptors = [
+      { id: "   ", type: "boolean", label: "Fast mode" },
+      { id: "fastMode", type: "boolean", label: "   " },
+      { id: "account", type: "select", label: "Account" },
+      {
+        id: "account",
+        type: "select",
+        label: "Account",
+        options: [{ id: "   ", label: "Work" }],
+      },
+      {
+        id: "account",
+        type: "select",
+        label: "Account",
+        options: [{ id: "work", label: "   " }],
+      },
+    ];
+
+    for (const descriptor of invalidDescriptors) {
+      expect(() => decodeProviderGlobalOption(descriptor)).toThrow();
+    }
+  });
+
+  it("allows select descriptors with no choices under the generic descriptor schema", () => {
+    expect(
+      decodeProviderGlobalOption({
+        id: "account",
+        type: "select",
+        label: "Account",
+        options: [],
+      }),
+    ).toEqual({ id: "account", type: "select", label: "Account", options: [] });
   });
 
   it("defaults one-click update support when decoding older advisory snapshots", () => {
@@ -114,6 +202,61 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
+  });
+});
+
+describe("ServerProviderGlobalOptionSetInput", () => {
+  it("accepts string and boolean provider option selections", () => {
+    expect(
+      decodeServerProviderGlobalOptionSetInput({
+        instanceId: "commandcode",
+        optionId: "account",
+        value: "work",
+      }),
+    ).toEqual({ instanceId: "commandcode", optionId: "account", value: "work" });
+    expect(
+      decodeServerProviderGlobalOptionSetInput({
+        instanceId: "commandcode",
+        optionId: "fastMode",
+        value: false,
+      }),
+    ).toEqual({ instanceId: "commandcode", optionId: "fastMode", value: false });
+  });
+
+  it("rejects empty option ids and invalid selection values", () => {
+    expect(() =>
+      decodeServerProviderGlobalOptionSetInput({
+        instanceId: "commandcode",
+        optionId: "   ",
+        value: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeServerProviderGlobalOptionSetInput({
+        instanceId: "commandcode",
+        optionId: "account",
+        value: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeServerProviderGlobalOptionSetInput({
+        instanceId: "commandcode",
+        optionId: "account",
+        value: 1,
+      }),
+    ).toThrow();
+  });
+
+  it("carries provider and option context in typed errors", () => {
+    const error = new ServerProviderGlobalOptionSetError({
+      instanceId: ProviderInstanceId.make("commandcode"),
+      optionId: "account",
+      message: "Failed to update account.",
+    });
+
+    expect(error.instanceId).toBe("commandcode");
+    expect(error.optionId).toBe("account");
+    expect(error.message).toBe("Failed to update account.");
   });
 });
 

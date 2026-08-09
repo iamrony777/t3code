@@ -37,6 +37,7 @@ const makeProvider = (
   auth: { status: "authenticated" },
   checkedAt: "2026-04-11T00:00:00.000Z",
   models: [],
+  globalOptions: [],
   slashCommands: [],
   skills: [],
   ...overrides,

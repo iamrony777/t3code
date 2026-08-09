@@ -62,6 +62,7 @@ const initialSnapshot: ServerProvider = {
   checkedAt: "2026-04-10T00:00:00.000Z",
   message: "Checking provider availability...",
   models: [],
+  globalOptions: [],
   slashCommands: [],
   skills: [],
 };
@@ -76,6 +77,7 @@ const refreshedSnapshot: ServerProvider = {
   auth: { status: "authenticated" },
   checkedAt: "2026-04-10T00:00:01.000Z",
   models: [],
+  globalOptions: [],
   slashCommands: [],
   skills: [],
 };

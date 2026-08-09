@@ -127,6 +127,8 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerProviderGlobalOptionSetError,
+  ServerProviderGlobalOptionSetInput,
   ServerProviderUpdateError,
   ServerProviderUpdateInput,
   ServerLifecycleStreamEvent,
@@ -228,6 +230,7 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverSetProviderGlobalOption: "server.setProviderGlobalOption",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
@@ -306,6 +309,15 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
   success: ServerProviderUpdatedPayload,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsServerSetProviderGlobalOptionRpc = Rpc.make(
+  WS_METHODS.serverSetProviderGlobalOption,
+  {
+    payload: ServerProviderGlobalOptionSetInput,
+    success: ServerProviderUpdatedPayload,
+    error: Schema.Union([ServerProviderGlobalOptionSetError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -814,6 +826,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerSetProviderGlobalOptionRpc,
   WsServerUpdateProviderRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,

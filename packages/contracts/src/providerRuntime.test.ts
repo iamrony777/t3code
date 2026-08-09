@@ -6,6 +6,25 @@ import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.t
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
+  it("accepts raw Command Code CLI events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "session.started",
+      eventId: "event-command-code-raw",
+      provider: "commandcode",
+      providerInstanceId: "commandcode",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      threadId: "thread-command-code",
+      raw: {
+        source: "commandcode.cli.event",
+        messageType: "text_delta",
+        payload: { type: "text_delta", delta: "hello" },
+      },
+      payload: { message: "started" },
+    });
+
+    expect(parsed.raw?.source).toBe("commandcode.cli.event");
+  });
+
   it("accepts fork-provided driver kinds as branded slugs", () => {
     const parsed = decodeRuntimeEvent({
       type: "session.started",

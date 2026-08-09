@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  PROVIDER_DISPLAY_NAMES,
+} from "./model.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
@@ -164,6 +169,45 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("Command Code provider settings", () => {
+  it("defaults to an enabled cross-platform command-code binary", () => {
+    const settings = decodeServerSettings({});
+
+    expect(settings.providers.commandcode).toEqual({
+      enabled: true,
+      binaryPath: "command-code",
+      customModels: [],
+    });
+  });
+
+  it("normalizes Command Code provider patches", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        commandcode: {
+          enabled: false,
+          binaryPath: "  /opt/bin/command-code  ",
+          customModels: ["custom/model"],
+        },
+      },
+    });
+
+    expect(patch.providers?.commandcode).toEqual({
+      enabled: false,
+      binaryPath: "/opt/bin/command-code",
+      customModels: ["custom/model"],
+    });
+  });
+
+  it("publishes Command Code model defaults and display metadata", () => {
+    const commandCode = ProviderDriverKind.make("commandcode");
+    expect(DEFAULT_MODEL_BY_PROVIDER[commandCode]).toBe("deepseek/deepseek-v4-flash");
+    expect(DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[commandCode]).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
+    expect(PROVIDER_DISPLAY_NAMES[commandCode]).toBe("Command Code");
   });
 });
 

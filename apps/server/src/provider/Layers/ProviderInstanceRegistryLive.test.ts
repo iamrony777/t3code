@@ -36,8 +36,12 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
@@ -271,6 +275,67 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         expect(ghost.unavailableReason).toMatch(/ghostDriver/);
       }).pipe(Effect.provide(testLayer)),
   );
+
+  it.live("keeps a leased instance generation live until its operation completes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("codex_leased");
+        const driver = ProviderDriverKind.make("codex");
+        const firstConfig: ProviderInstanceConfigMap = {
+          [instanceId]: {
+            driver,
+            displayName: "First generation",
+            enabled: false,
+            config: makeCodexConfig({}),
+          },
+        };
+        const { registry, mutator } = yield* makeProviderInstanceRegistry({
+          drivers: [CodexDriver],
+          configMap: firstConfig,
+        });
+        const operationStarted = yield* Deferred.make<void>();
+        const releaseOperation = yield* Deferred.make<void>();
+        const reconcileStarted = yield* Deferred.make<void>();
+        const reconcileCompleted = yield* Deferred.make<void>();
+        const mutatedGenerations: string[] = [];
+
+        const operation = yield* registry
+          .useInstance(instanceId, (instance) =>
+            Effect.gen(function* () {
+              mutatedGenerations.push(instance?.displayName ?? "missing");
+              yield* Deferred.succeed(operationStarted, undefined);
+              yield* Deferred.await(releaseOperation);
+            }),
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(operationStarted);
+
+        const reconcile = yield* Deferred.succeed(reconcileStarted, undefined).pipe(
+          Effect.andThen(
+            mutator.reconcile({
+              [instanceId]: {
+                ...firstConfig[instanceId]!,
+                displayName: "Second generation",
+              },
+            }),
+          ),
+          Effect.andThen(Deferred.succeed(reconcileCompleted, undefined)),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(reconcileStarted);
+        yield* Effect.yieldNow;
+        expect(yield* Deferred.isDone(reconcileCompleted)).toBe(false);
+        expect((yield* registry.getInstance(instanceId))?.displayName).toBe("First generation");
+
+        yield* Deferred.succeed(releaseOperation, undefined);
+        yield* Fiber.join(operation);
+        yield* Fiber.join(reconcile);
+
+        expect(mutatedGenerations).toEqual(["First generation"]);
+        expect((yield* registry.getInstance(instanceId))?.displayName).toBe("Second generation");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
 });
 
 describe("ProviderInstanceRegistryLive — all drivers slice", () => {
@@ -312,6 +377,10 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const grokDriverKind = ProviderDriverKind.make("grok");
       const commandCodeDriverKind = ProviderDriverKind.make("commandcode");
       const openCodeDriverKind = ProviderDriverKind.make("opencode");
+      const fs = yield* FileSystem.FileSystem;
+      const commandCodeHome = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-command-code-registry-",
+      });
 
       const configMap: ProviderInstanceConfigMap = {
         [codexId]: {
@@ -345,6 +414,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
           driver: commandCodeDriverKind,
           displayName: "Command Code",
           enabled: false,
+          environment: [{ name: "HOME", value: commandCodeHome, sensitive: false }],
           config: makeCommandCodeConfig({}),
         },
         [openCodeId]: {
@@ -398,6 +468,25 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(cursor?.displayName).toBe("Cursor");
       expect(grok?.displayName).toBe("Grok");
       expect(commandCode?.displayName).toBe("Command Code");
+      expect(commandCode?.setGlobalOption).toBeDefined();
+      expect((yield* commandCode!.snapshot.getSnapshot).globalOptions).toEqual([
+        {
+          id: "compactMode",
+          label: "Compact Mode",
+          type: "select",
+          currentValue: "default",
+          options: [
+            { id: "default", label: "Normal", isDefault: true },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+        {
+          id: "tasteLearning",
+          label: "Taste Learning",
+          type: "boolean",
+          currentValue: true,
+        },
+      ]);
       expect(openCode?.displayName).toBe("OpenCode");
 
       // Every instance owns its own set of closures — no sharing across
@@ -481,5 +570,58 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         `${openCodeDriverKind}:instance:${openCodeId}`,
       );
     }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.live("keeps disabled Command Code global options accurate across native changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-disabled-" });
+        const commandCodeDir = path.join(home, ".commandcode");
+        yield* fs.makeDirectory(commandCodeDir, { recursive: true });
+        const settingsFile = path.join(commandCodeDir, "settings.json");
+        yield* fs.writeFileString(settingsFile, '{"compactMode":"fast","tasteLearning":false}');
+        const instanceId = ProviderInstanceId.make("commandcode_disabled");
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [CommandCodeDriver],
+          configMap: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("commandcode"),
+              enabled: false,
+              environment: [{ name: "HOME", value: home, sensitive: false }],
+              config: makeCommandCodeConfig({}),
+            },
+          },
+        });
+        const instance = yield* registry.getInstance(instanceId);
+
+        expect((yield* instance!.snapshot.getSnapshot).globalOptions).toEqual([
+          {
+            id: "compactMode",
+            label: "Compact Mode",
+            type: "select",
+            currentValue: "fast",
+            options: [
+              { id: "default", label: "Normal", isDefault: true },
+              { id: "fast", label: "Fast" },
+            ],
+          },
+          {
+            id: "tasteLearning",
+            label: "Taste Learning",
+            type: "boolean",
+            currentValue: false,
+          },
+        ]);
+
+        yield* fs.writeFileString(settingsFile, '{"compactMode":"default","tasteLearning":true}');
+        const refreshed = yield* instance!.snapshot.refresh;
+        expect(refreshed.globalOptions.map((option) => option.currentValue)).toEqual([
+          "default",
+          true,
+        ]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 });

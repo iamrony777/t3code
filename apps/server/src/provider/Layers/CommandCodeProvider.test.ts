@@ -18,8 +18,11 @@ import {
   activateCommandCodeCatalogForProbeResult,
   makeCommandCodeCatalogControllerForProvider,
   makeCommandCodeEffortProbeCommand,
+  makeCommandCodeGlobalOptionCommand,
+  makeCommandCodeGlobalOptionsControllerForProvider,
 } from "../Drivers/CommandCodeDriver.ts";
 import {
+  attachCommandCodeGlobalOptions,
   buildInitialCommandCodeProviderSnapshot,
   checkCommandCodeProviderStatus,
   commandCodeCatalogModelsToServerModels,
@@ -29,6 +32,7 @@ import {
 } from "./CommandCodeProvider.ts";
 
 const decodeSettings = Schema.decodeSync(CommandCodeSettings);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const commandCodeApiLayer = Layer.succeed(
   HttpClient.HttpClient,
@@ -62,6 +66,42 @@ describe("buildInitialCommandCodeProviderSnapshot", () => {
       expect(snapshot.status).toBe("warning");
       expect(snapshot.showInteractionModeToggle).toBe(true);
       expect(snapshot.models.map((model) => model.slug)).toEqual(["deepseek/deepseek-v4-flash"]);
+      expect(snapshot.globalOptions).toEqual([
+        {
+          id: "compactMode",
+          label: "Compact Mode",
+          type: "select",
+          currentValue: "default",
+          options: [
+            { id: "default", label: "Normal", isDefault: true },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+        {
+          id: "tasteLearning",
+          label: "Taste Learning",
+          type: "boolean",
+          currentValue: true,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("replaces only global options when native settings are refreshed", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* buildInitialCommandCodeProviderSnapshot(decodeSettings({}));
+      const updated = attachCommandCodeGlobalOptions(snapshot, [
+        {
+          id: "tasteLearning",
+          label: "Taste Learning",
+          type: "boolean",
+          currentValue: false,
+        },
+      ]);
+
+      expect(updated.globalOptions[0]?.currentValue).toBe(false);
+      expect(updated.models).toBe(snapshot.models);
+      expect(updated.status).toBe(snapshot.status);
     }),
   );
 });
@@ -274,6 +314,41 @@ describe("Command Code probe commands", () => {
       }
     }),
   );
+
+  it.effect("resolves global mutations without an interactive stdin and with force-kill", () =>
+    Effect.gen(function* () {
+      const command = yield* makeCommandCodeGlobalOptionCommand(
+        decodeSettings({ binaryPath: "/opt/bin/command-code" }),
+        ["--config", "compact-mode=default"],
+        process.env,
+      );
+      expect(command.command).toBe("/opt/bin/command-code");
+      expect(command.args).toEqual(["--config", "compact-mode=default"]);
+      expect(command.options.shell).toBe(false);
+      expect(command.options.stdin).toBe("ignore");
+      expect(command.options.forceKillAfter).toBe("1 second");
+    }),
+  );
+
+  it.effect("resolves Windows global mutations through command shims", () =>
+    Effect.gen(function* () {
+      const command = yield* makeCommandCodeGlobalOptionCommand(
+        decodeSettings({}),
+        ["taste", "enable", "--user"],
+        { PATH: "C:\\fake\\npm", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+      ).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, {}),
+        Effect.provideService(SpawnExecutableResolution, () => "C:\\fake\\npm\\command-code.cmd"),
+      );
+
+      expect(command.command).toMatch(/command-code\.cmd/i);
+      expect(command.args).toHaveLength(3);
+      expect(command.options.shell).toBe(true);
+      expect(command.options.stdin).toBe("ignore");
+      expect(command.options.forceKillAfter).toBe("1 second");
+    }),
+  );
 });
 
 describe("makeCommandCodeCatalogControllerForProvider", () => {
@@ -354,6 +429,55 @@ describe("makeCommandCodeCatalogControllerForProvider", () => {
         expect(yield* fs.exists(controller.cachePath(identity))).toBe(true);
       }),
     ).pipe(Effect.provide(catalogRuntimeLayer)),
+  );
+});
+
+describe("makeCommandCodeGlobalOptionsControllerForProvider", () => {
+  it.effect("uses an isolated HOME and executes native mutations with read-after-write", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-home-" });
+        const commandCodeDir = path.join(home, ".commandcode");
+        const settingsFile = path.join(commandCodeDir, "settings.json");
+        const executable = path.join(home, "command-code");
+        yield* fs.makeDirectory(commandCodeDir, { recursive: true });
+        yield* fs.writeFileString(
+          executable,
+          [
+            "#!/bin/sh",
+            'settings="$HOME/.commandcode/settings.json"',
+            'if [ "$1" = "--config" ] && [ "$2" = "compact-mode=fast" ]; then',
+            '  printf \'%s\' \'{"compactMode":"fast","tasteLearning":true}\' > "$settings"',
+            'elif [ "$1" = "taste" ] && [ "$2" = "disable" ] && [ "$3" = "--user" ]; then',
+            '  printf \'%s\' \'{"compactMode":"fast","tasteLearning":false}\' > "$settings"',
+            "else",
+            "  exit 7",
+            "fi",
+          ].join("\n"),
+        );
+        yield* fs.chmod(executable, 0o755);
+
+        const controller = yield* makeCommandCodeGlobalOptionsControllerForProvider(
+          decodeSettings({ binaryPath: executable }),
+          { HOME: home, PATH: process.env.PATH },
+        );
+        expect((yield* controller.readOptions)[1]?.currentValue).toBe(true);
+
+        yield* controller.setGlobalOption({ optionId: "compactMode", value: "fast" });
+        yield* controller.setGlobalOption({ optionId: "tasteLearning", value: false });
+
+        expect(decodeJson(yield* fs.readFileString(settingsFile))).toEqual({
+          compactMode: "fast",
+          tasteLearning: false,
+        });
+        expect((yield* controller.readOptions).map((option) => option.currentValue)).toEqual([
+          "fast",
+          false,
+        ]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 });
 

@@ -9,6 +9,8 @@
  *
  * What rest-of-server reads from here:
  *   - `getInstance(instanceId)` — for routing turn/session calls.
+ *   - `useInstance(instanceId, use)` — for operations that must keep the
+ *     selected live generation from being replaced while they run.
  *   - `listInstances` — for snapshot aggregation in `ProviderRegistry`.
  *   - `listUnavailable` — `ServerProvider` shadows for instances whose
  *     driver is not registered in this build (rollback / fork tolerance).
@@ -35,6 +37,15 @@ export interface ProviderInstanceRegistryShape {
   readonly getInstance: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderInstance | undefined>;
+  /**
+   * Run an operation against one exact live instance generation. Registry
+   * reconciliation waits for the callback to finish before closing or
+   * replacing any instance scope.
+   */
+  readonly useInstance: <A, E, R>(
+    instanceId: ProviderInstanceId,
+    use: (instance: ProviderInstance | undefined) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   /**
    * Every available (driver-registered, successfully created) instance,
    * in stable settings-author order.

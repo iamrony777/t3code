@@ -649,6 +649,7 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
             getInstance: () => Effect.sync((): ProviderInstance | undefined => undefined),
+            useInstance: (_instanceId, use) => use(undefined),
             listInstances: Effect.succeed([]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -4466,6 +4467,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const otherMutations: Array<{ readonly optionId: string; readonly value: string | boolean }> =
         [];
       const refreshedInstanceIds: Array<ProviderInstanceId> = [];
+      const leaseEvents: string[] = [];
       const targetInstance = {
         instanceId: targetId,
         setGlobalOption: (mutation) =>
@@ -4498,18 +4500,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           providerInstanceRegistry: {
-            getInstance: (instanceId) =>
-              Effect.succeed(
-                instanceId === targetId
-                  ? (targetInstance as unknown as ProviderInstance)
-                  : instanceId === otherId
-                    ? (otherInstance as unknown as ProviderInstance)
-                    : undefined,
+            useInstance: (instanceId, use) =>
+              Effect.sync(() => leaseEvents.push("lease:start")).pipe(
+                Effect.andThen(
+                  use(
+                    instanceId === targetId
+                      ? (targetInstance as unknown as ProviderInstance)
+                      : instanceId === otherId
+                        ? (otherInstance as unknown as ProviderInstance)
+                        : undefined,
+                  ),
+                ),
+                Effect.ensuring(Effect.sync(() => leaseEvents.push("lease:end"))),
               ),
           },
           providerRegistry: {
             refreshInstance: (instanceId) =>
               Effect.sync(() => {
+                leaseEvents.push("refresh");
                 refreshedInstanceIds.push(instanceId);
                 return [refreshedProvider];
               }),
@@ -4531,6 +4539,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(targetMutations, [{ optionId: "reasoning-effort", value: "high" }]);
       assert.deepEqual(otherMutations, []);
       assert.deepEqual(refreshedInstanceIds, [targetId]);
+      assert.deepEqual(leaseEvents, ["lease:start", "refresh", "lease:end"]);
       assert.deepEqual(response.providers, [refreshedProvider]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -4550,8 +4559,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           providerInstanceRegistry: {
-            getInstance: (instanceId) =>
-              Effect.succeed(
+            useInstance: (instanceId, use) =>
+              use(
                 instanceId === unsupportedId
                   ? unsupportedInstance
                   : instanceId === failingId

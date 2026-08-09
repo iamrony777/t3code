@@ -21,10 +21,17 @@ import {
   createCommandCodeCatalogController,
   type CommandCodeEffortProbeInput,
 } from "../commandCodeCatalog.ts";
+import {
+  COMMAND_CODE_SETTINGS_MAX_BYTES,
+  createCommandCodeGlobalOptionsController,
+  resolveCommandCodeSettingsFilePath,
+  type CommandCodeGlobalOptionCommandInput,
+} from "../commandCodeGlobalOptions.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCommandCodeAdapter } from "../Layers/CommandCodeAdapter.ts";
 import {
   buildInitialCommandCodeProviderSnapshot,
+  attachCommandCodeGlobalOptions,
   type CommandCodeCatalogSeed,
   type CommandCodeProviderProbeResult,
   enrichCommandCodeProviderSnapshot,
@@ -173,6 +180,67 @@ export const makeCommandCodeCatalogControllerForProvider = Effect.fn(
   });
 });
 
+export const makeCommandCodeGlobalOptionCommand = Effect.fn("makeCommandCodeGlobalOptionCommand")(
+  function* (
+    settings: CommandCodeSettings,
+    args: ReadonlyArray<string>,
+    environment: NodeJS.ProcessEnv,
+  ) {
+    const binaryPath = settings.binaryPath || "command-code";
+    const resolved = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
+    return ChildProcess.make(resolved.command, resolved.args, {
+      env: environment,
+      shell: resolved.shell,
+      stdin: "ignore",
+      forceKillAfter: PROBE_FORCE_KILL_AFTER,
+    });
+  },
+);
+
+export const makeCommandCodeGlobalOptionsControllerForProvider = Effect.fn(
+  "makeCommandCodeGlobalOptionsControllerForProvider",
+)(function* (settings: CommandCodeSettings, environment: NodeJS.ProcessEnv) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settingsFilePath = resolveCommandCodeSettingsFilePath(environment, path.join);
+
+  return yield* createCommandCodeGlobalOptionsController<PlatformError.PlatformError>({
+    settingsFilePath,
+    readSettingsFile: (filePath) =>
+      fs
+        .stat(filePath)
+        .pipe(
+          Effect.flatMap((info) =>
+            info.size > BigInt(COMMAND_CODE_SETTINGS_MAX_BYTES)
+              ? Effect.succeed("")
+              : fs.readFileString(filePath),
+          ),
+        ),
+    runCommand: Effect.fn("CommandCodeGlobalOptions.runCommand")(function* (
+      input: CommandCodeGlobalOptionCommandInput,
+    ) {
+      const command = yield* makeCommandCodeGlobalOptionCommand(settings, input.args, environment);
+      const child = yield* spawner.spawn(command);
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectUint8StreamText({ stream: child.stdout, maxBytes: input.maxStdoutBytes }),
+          collectUint8StreamText({ stream: child.stderr, maxBytes: input.maxStderrBytes }),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      );
+      return {
+        exitCode: Number(exitCode),
+        stdout: stdout.text,
+        stderr: stderr.text,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+      };
+    }, Effect.scoped),
+  });
+});
+
 const withInstanceIdentity =
   (input: {
     readonly instanceId: ProviderInstance["instanceId"];
@@ -217,6 +285,11 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
       });
       const effectiveConfig = { ...config, enabled } satisfies CommandCodeSettings;
       const catalogController = yield* makeCommandCodeCatalogControllerForProvider(processEnv);
+      const globalOptionsController = yield* makeCommandCodeGlobalOptionsControllerForProvider(
+        effectiveConfig,
+        processEnv,
+      );
+      const readGlobalOptions = globalOptionsController.readOptions;
       const catalogSeedRef = yield* Ref.make<CommandCodeCatalogSeed | undefined>(undefined);
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
@@ -244,7 +317,13 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
             yield* activateCommandCodeCatalogForProbeResult(catalogController, result);
           }),
         ),
-        Effect.map((result) => stampIdentity(result.snapshot)),
+        Effect.flatMap((result) =>
+          readGlobalOptions.pipe(
+            Effect.map((globalOptions) =>
+              stampIdentity(attachCommandCodeGlobalOptions(result.snapshot, globalOptions)),
+            ),
+          ),
+        ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -259,7 +338,13 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
         initialSnapshot: (settings) =>
           buildInitialCommandCodeProviderSnapshot(settings.provider).pipe(
-            Effect.map(stampIdentity),
+            Effect.flatMap((initial) =>
+              readGlobalOptions.pipe(
+                Effect.map((globalOptions) =>
+                  stampIdentity(attachCommandCodeGlobalOptions(initial, globalOptions)),
+                ),
+              ),
+            ),
           ),
         checkProvider,
         enrichSnapshot: ({ settings, snapshot, getSnapshot, publishSnapshot }) =>
@@ -317,6 +402,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         snapshot,
         adapter,
         textGeneration,
+        setGlobalOption: globalOptionsController.setGlobalOption,
       } satisfies ProviderInstance;
     }),
 };

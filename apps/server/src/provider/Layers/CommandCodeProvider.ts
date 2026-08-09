@@ -1,6 +1,7 @@
 import {
   type CommandCodeSettings,
   type ModelCapabilities,
+  type ProviderGlobalOption,
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerProviderModel,
@@ -16,6 +17,10 @@ import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { CommandCodeCatalogIdentity, CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
+import {
+  commandCodeGlobalOptionsFromSettings,
+  parseCommandCodeGlobalSettings,
+} from "../commandCodeGlobalOptions.ts";
 import {
   type CommandCodeModel,
   parseCommandCodeModels,
@@ -49,6 +54,16 @@ const FALLBACK_MODELS: ReadonlyArray<ServerProviderModel> = [
     capabilities: EMPTY_CAPABILITIES,
   },
 ];
+const DEFAULT_GLOBAL_OPTIONS = commandCodeGlobalOptionsFromSettings(
+  parseCommandCodeGlobalSettings(undefined),
+);
+
+export function attachCommandCodeGlobalOptions<Snapshot extends ServerProviderDraft>(
+  snapshot: Snapshot,
+  globalOptions: ReadonlyArray<ProviderGlobalOption>,
+): Snapshot {
+  return { ...snapshot, globalOptions };
+}
 
 function modelsFromSettings(
   settings: CommandCodeSettings,
@@ -190,28 +205,31 @@ export function buildInitialCommandCodeProviderSnapshot(
 ): Effect.Effect<ServerProviderDraft> {
   return Effect.gen(function* () {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    return buildServerProvider({
-      driver: PROVIDER,
-      presentation: PRESENTATION,
-      enabled: settings.enabled,
-      checkedAt,
-      models: modelsFromSettings(settings),
-      probe: settings.enabled
-        ? {
-            installed: true,
-            version: null,
-            status: "warning",
-            auth: { status: "unknown" },
-            message: "Checking Command Code CLI availability...",
-          }
-        : {
-            installed: false,
-            version: null,
-            status: "warning",
-            auth: { status: "unknown" },
-            message: "Command Code is disabled in T3 Code settings.",
-          },
-    });
+    return attachCommandCodeGlobalOptions(
+      buildServerProvider({
+        driver: PROVIDER,
+        presentation: PRESENTATION,
+        enabled: settings.enabled,
+        checkedAt,
+        models: modelsFromSettings(settings),
+        probe: settings.enabled
+          ? {
+              installed: true,
+              version: null,
+              status: "warning",
+              auth: { status: "unknown" },
+              message: "Checking Command Code CLI availability...",
+            }
+          : {
+              installed: false,
+              version: null,
+              status: "warning",
+              auth: { status: "unknown" },
+              message: "Command Code is disabled in T3 Code settings.",
+            },
+      }),
+      DEFAULT_GLOBAL_OPTIONS,
+    );
   });
 }
 

@@ -874,6 +874,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              useInstance: (instanceId, use) =>
+                use(instanceId === codexInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1030,6 +1032,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
+              useInstance: (instanceId, use) =>
+                use(instanceId === cursorInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1160,6 +1164,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               {
                 getInstance: (instanceId) =>
                   Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
+                useInstance: (instanceId, use) =>
+                  use(instanceId === openCodeInstanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.empty,
@@ -1268,6 +1274,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              useInstance: (instanceId, use) =>
+                use(instanceId === codexInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1371,6 +1379,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 Ref.get(instancesRef).pipe(
                   Effect.map((instances) =>
                     instances.find((instance) => instance.instanceId === instanceId),
+                  ),
+                ),
+              useInstance: (instanceId, use) =>
+                Ref.get(instancesRef).pipe(
+                  Effect.flatMap((instances) =>
+                    use(instances.find((instance) => instance.instanceId === instanceId)),
                   ),
                 ),
               listInstances: Effect.gen(function* () {

@@ -1451,42 +1451,43 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverSetProviderGlobalOption]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverSetProviderGlobalOption,
-            Effect.gen(function* () {
-              const instance = yield* providerInstanceRegistry.getInstance(input.instanceId);
-              if (instance === undefined) {
-                return yield* new ServerProviderGlobalOptionSetError({
-                  instanceId: input.instanceId,
-                  optionId: input.optionId,
-                  message: `Provider instance '${input.instanceId}' was not found.`,
-                });
-              }
-              if (instance.setGlobalOption === undefined) {
-                return yield* new ServerProviderGlobalOptionSetError({
-                  instanceId: input.instanceId,
-                  optionId: input.optionId,
-                  message: `Provider instance '${input.instanceId}' does not support global option mutations.`,
-                });
-              }
+            providerInstanceRegistry.useInstance(input.instanceId, (instance) =>
+              Effect.gen(function* () {
+                if (instance === undefined) {
+                  return yield* new ServerProviderGlobalOptionSetError({
+                    instanceId: input.instanceId,
+                    optionId: input.optionId,
+                    message: `Provider instance '${input.instanceId}' was not found.`,
+                  });
+                }
+                if (instance.setGlobalOption === undefined) {
+                  return yield* new ServerProviderGlobalOptionSetError({
+                    instanceId: input.instanceId,
+                    optionId: input.optionId,
+                    message: `Provider instance '${input.instanceId}' does not support global option mutations.`,
+                  });
+                }
 
-              yield* instance
-                .setGlobalOption({
-                  optionId: input.optionId,
-                  value: input.value,
-                })
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ServerProviderGlobalOptionSetError({
-                        instanceId: input.instanceId,
-                        optionId: input.optionId,
-                        message: `Failed to set provider global option: ${cause.message}`,
-                      }),
-                  ),
-                );
+                yield* instance
+                  .setGlobalOption({
+                    optionId: input.optionId,
+                    value: input.value,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ServerProviderGlobalOptionSetError({
+                          instanceId: input.instanceId,
+                          optionId: input.optionId,
+                          message: `Failed to set provider global option: ${cause.message}`,
+                        }),
+                    ),
+                  );
 
-              const providers = yield* providerRegistry.refreshInstance(input.instanceId);
-              return { providers };
-            }),
+                const providers = yield* providerRegistry.refreshInstance(input.instanceId);
+                return { providers };
+              }),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>

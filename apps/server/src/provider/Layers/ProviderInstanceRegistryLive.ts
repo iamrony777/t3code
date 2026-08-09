@@ -49,6 +49,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { buildUnavailableProviderSnapshot } from "../unavailableProviderSnapshot.ts";
@@ -358,12 +359,15 @@ export const makeProviderInstanceRegistry = <R>(input: {
     const entries = yield* Ref.make<ReadonlyMap<ProviderInstanceId, LiveEntry>>(new Map());
     const unavailable = yield* Ref.make<ReadonlyMap<ProviderInstanceId, ServerProvider>>(new Map());
     const changes = yield* PubSub.unbounded<void>();
+    const operationSemaphore = yield* Semaphore.make(1);
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
     const state: RegistryState = { entries, unavailable, changes };
     const reconcileWithR = makeReconcile({ state, driversById, parentScope });
     const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (configMap) =>
-      reconcileWithR(configMap).pipe(Effect.provideContext(driverContext));
+      operationSemaphore.withPermits(1)(
+        reconcileWithR(configMap).pipe(Effect.provideContext(driverContext)),
+      );
 
     // Hydrate the initial configMap synchronously so callers can read
     // `listInstances` immediately after this effect completes.
@@ -371,6 +375,10 @@ export const makeProviderInstanceRegistry = <R>(input: {
 
     const registry: ProviderInstanceRegistryShape = {
       getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
+      useInstance: (id, use) =>
+        operationSemaphore.withPermits(1)(
+          Ref.get(entries).pipe(Effect.flatMap((map) => use(map.get(id)?.instance))),
+        ),
       listInstances: Ref.get(entries).pipe(
         Effect.map(
           (map) =>

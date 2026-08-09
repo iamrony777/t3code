@@ -10,6 +10,17 @@ import {
 } from "./ProviderSettingsForm";
 
 describe("ProviderSettingsForm helpers", () => {
+  it("exposes Command Code as an Early Access provider with only its binary path visible", () => {
+    const commandCode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("commandcode")];
+
+    expect(commandCode).toBeDefined();
+    expect(commandCode?.label).toBe("Command Code");
+    expect(commandCode?.badgeLabel).toBe("Early Access");
+    expect(deriveProviderSettingsFields(commandCode!).map((field) => field.key)).toEqual([
+      "binaryPath",
+    ]);
+  });
+
   it("derives visible provider config fields from the client definition schema", () => {
     const codex = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("codex")];
 

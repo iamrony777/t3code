@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  PROVIDER_OPTIONS,
   deriveTurnPlans,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -23,6 +24,17 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
 } from "./session-logic";
+
+describe("PROVIDER_OPTIONS", () => {
+  it("offers Command Code as a new provider", () => {
+    expect(PROVIDER_OPTIONS).toContainEqual({
+      value: "commandcode",
+      label: "Command Code",
+      available: true,
+      pickerSidebarBadge: "new",
+    });
+  });
+});
 
 let nextActivityId = 0;
 

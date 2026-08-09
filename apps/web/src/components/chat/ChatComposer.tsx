@@ -18,6 +18,10 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -98,8 +102,11 @@ import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
+  buildProviderGlobalOptionMutationTarget,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
+  runTrackedProviderGlobalOptionMutation,
+  selectPendingProviderGlobalOptionIds,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -223,9 +230,13 @@ import {
   formatProviderDisplayName,
 } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+
+const EMPTY_PROVIDER_GLOBAL_OPTIONS: ServerProvider["globalOptions"] = [];
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -667,6 +678,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
+  const setProviderGlobalOption = useAtomCommand(serverEnvironment.setProviderGlobalOption, {
+    reportFailure: false,
+  });
 
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
@@ -849,6 +863,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
   );
+  const selectedProviderGlobalOptions =
+    selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS;
 
   const composerPromptInjectionState = useMemo(
     () => getComposerPromptInjectionState(prompt),
@@ -947,6 +963,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [pendingGlobalOptionCounts, setPendingGlobalOptionCounts] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
   const [composerMenuAnchor, setComposerMenuAnchor] = useState<HTMLDivElement | null>(null);
   const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
   const [stashPulse, setStashPulse] = useState<{ key: number; active: boolean }>({
@@ -1196,6 +1215,57 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [composerDraftTarget, promptRef, scheduleComposerFocus, setComposerDraftPrompt],
   );
 
+  const setGlobalOptionFromTraits = useCallback(
+    async (input: {
+      instanceId: ProviderInstanceId;
+      optionId: string;
+      value: string | boolean;
+    }) => {
+      await runTrackedProviderGlobalOptionMutation({
+        environmentId,
+        mutation: input,
+        updatePending: setPendingGlobalOptionCounts,
+        run: async () => {
+          const result = await setProviderGlobalOption(
+            buildProviderGlobalOptionMutationTarget(environmentId, input),
+          );
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            if (error instanceof Error) {
+              throw error;
+            }
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "message" in error &&
+              typeof error.message === "string"
+            ) {
+              throw new Error(error.message);
+            }
+            throw new Error("Could not update the provider setting.");
+          }
+        },
+      });
+    },
+    [environmentId, setProviderGlobalOption],
+  );
+  const reportGlobalOptionError = useCallback((message: string) => {
+    toastManager.add({
+      type: "error",
+      title: "Could not update provider setting",
+      description: message,
+    });
+  }, []);
+  const pendingGlobalOptionIds = useMemo(
+    () =>
+      selectPendingProviderGlobalOptionIds(
+        pendingGlobalOptionCounts,
+        environmentId,
+        selectedInstanceId,
+      ),
+    [environmentId, pendingGlobalOptionCounts, selectedInstanceId],
+  );
+
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -1204,6 +1274,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    globalOptions: selectedProviderGlobalOptions,
+    pendingGlobalOptionIds,
+    onSetGlobalOption: setGlobalOptionFromTraits,
+    onGlobalOptionError: reportGlobalOptionError,
     prompt,
     onPromptChange: setPromptFromTraits,
   });
@@ -1215,6 +1289,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    globalOptions: selectedProviderGlobalOptions,
+    pendingGlobalOptionIds,
+    onSetGlobalOption: setGlobalOptionFromTraits,
+    onGlobalOptionError: reportGlobalOptionError,
     prompt,
     onPromptChange: setPromptFromTraits,
   });

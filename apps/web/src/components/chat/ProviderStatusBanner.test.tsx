@@ -21,6 +21,7 @@ function warningProvider(): ServerProvider {
     checkedAt: "2026-07-23T12:00:00.000Z",
     message: "Provider is temporarily degraded.",
     models: [],
+    globalOptions: [],
     slashCommands: [],
     skills: [],
   };

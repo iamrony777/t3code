@@ -102,6 +102,7 @@ function provider(): ServerProvider {
     auth: { status: "authenticated" },
     checkedAt: "2026-07-24T12:00:00.000Z",
     models: [],
+    globalOptions: [],
     slashCommands: [],
     skills: [],
     versionAdvisory: {

@@ -1,9 +1,11 @@
 import {
   type ProviderDriverKind,
+  type ProviderGlobalOption,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ScopedThreadRef,
+  type ServerProviderGlobalOptionSetInput,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
@@ -35,6 +37,49 @@ import { ComposerControl, ComposerControlChevron, ComposerControlIcon } from "./
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
 
+type ProviderGlobalOptionMutation = ServerProviderGlobalOptionSetInput;
+
+export function buildTraitsMenuSections(
+  modelDescriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  globalOptions: ReadonlyArray<ProviderGlobalOption>,
+  pendingGlobalOptionIds: ReadonlySet<string>,
+) {
+  return [
+    ...modelDescriptors.map((descriptor, index) => ({
+      domain: "model" as const,
+      descriptor,
+      separatorBefore: index > 0,
+      pending: false,
+    })),
+    ...globalOptions.map((descriptor, index) => ({
+      domain: "global" as const,
+      descriptor,
+      separatorBefore: modelDescriptors.length > 0 || index > 0,
+      pending: pendingGlobalOptionIds.has(descriptor.id),
+    })),
+  ];
+}
+
+export async function runProviderGlobalOptionChange(input: {
+  instanceId: ProviderInstanceId;
+  option: ProviderGlobalOption;
+  value: string | boolean;
+  onSetGlobalOption: (input: ProviderGlobalOptionMutation) => Promise<void>;
+  onGlobalOptionError?: (message: string) => void;
+}): Promise<void> {
+  try {
+    await input.onSetGlobalOption({
+      instanceId: input.instanceId,
+      optionId: input.option.id,
+      value: input.value,
+    });
+  } catch (error) {
+    input.onGlobalOptionError?.(
+      error instanceof Error ? error.message : "Could not update the provider setting.",
+    );
+  }
+}
+
 type TraitsPersistence =
   | {
       threadRef?: ScopedThreadRef;
@@ -47,6 +92,8 @@ type TraitsPersistence =
     };
 
 const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
+const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
+const EMPTY_PENDING_GLOBAL_OPTION_IDS: ReadonlySet<string> = new Set();
 
 function DefaultBadge() {
   return (
@@ -167,6 +214,8 @@ function getTraitsSectionVisibility(input: {
   prompt: string;
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
+  globalOptions?: ReadonlyArray<ProviderGlobalOption>;
+  pendingGlobalOptionIds?: ReadonlySet<string>;
 }) {
   const selected = getSelectedTraits(
     input.provider,
@@ -182,6 +231,12 @@ function getTraitsSectionVisibility(input: {
   const showFastMode = selected.fastModeDescriptor !== null;
   const showContextWindow = selected.contextWindowDescriptor !== null;
   const showAgent = selected.agentDescriptor !== null;
+  const globalOptions = input.globalOptions ?? [];
+  const menuSections = buildTraitsMenuSections(
+    [...selected.selectDescriptors, ...selected.booleanDescriptors],
+    globalOptions,
+    input.pendingGlobalOptionIds ?? EMPTY_PENDING_GLOBAL_OPTION_IDS,
+  );
 
   return {
     ...selected,
@@ -190,7 +245,14 @@ function getTraitsSectionVisibility(input: {
     showFastMode,
     showContextWindow,
     showAgent,
-    hasAnyControls: showEffort || showThinking || showFastMode || showContextWindow || showAgent,
+    globalSections: menuSections.filter((section) => section.domain === "global"),
+    hasAnyControls:
+      showEffort ||
+      showThinking ||
+      showFastMode ||
+      showContextWindow ||
+      showAgent ||
+      globalOptions.length > 0,
   };
 }
 
@@ -201,6 +263,7 @@ export function shouldRenderTraitsControls(input: {
   prompt: string;
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
+  globalOptions?: ReadonlyArray<ProviderGlobalOption>;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -216,6 +279,10 @@ export interface TraitsMenuContentProps {
   allowPromptInjectedEffort?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
+  globalOptions?: ReadonlyArray<ProviderGlobalOption>;
+  pendingGlobalOptionIds?: ReadonlySet<string>;
+  onSetGlobalOption?: (input: ProviderGlobalOptionMutation) => Promise<void>;
+  onGlobalOptionError?: (message: string) => void;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -227,6 +294,10 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   onPromptChange,
   modelOptions,
   allowPromptInjectedEffort = true,
+  globalOptions = EMPTY_PROVIDER_GLOBAL_OPTIONS,
+  pendingGlobalOptionIds = EMPTY_PENDING_GLOBAL_OPTION_IDS,
+  onSetGlobalOption,
+  onGlobalOptionError,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -255,6 +326,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     primarySelectDescriptor,
     ultrathinkPromptControlled,
     ultrathinkInBodyText,
+    globalSections,
     hasAnyControls,
   } = getTraitsSectionVisibility({
     provider,
@@ -263,6 +335,8 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     prompt,
     modelOptions,
     allowPromptInjectedEffort,
+    globalOptions,
+    pendingGlobalOptionIds,
   });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
@@ -373,6 +447,74 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
           </div>
         );
       })}
+      {globalSections.map(({ descriptor, pending, separatorBefore }) => {
+        const canMutate = instanceId !== undefined && onSetGlobalOption !== undefined;
+        const selectedValue = getProviderOptionCurrentValue(descriptor);
+        const handleGlobalChange = (value: string | boolean) => {
+          if (!canMutate) return;
+          void runProviderGlobalOptionChange({
+            instanceId,
+            option: descriptor,
+            value,
+            onSetGlobalOption,
+            ...(onGlobalOptionError ? { onGlobalOptionError } : {}),
+          });
+        };
+
+        return (
+          <div key={descriptor.id}>
+            {separatorBefore ? <MenuDivider /> : null}
+            <MenuGroup>
+              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                {descriptor.label}
+              </div>
+              {descriptor.type === "select" ? (
+                <MenuRadioGroup
+                  value={typeof selectedValue === "string" ? selectedValue : ""}
+                  onValueChange={(value) => handleGlobalChange(value)}
+                >
+                  {descriptor.options.map((option) => (
+                    <MenuRadioItem
+                      key={option.id}
+                      value={option.id}
+                      hideIndicator
+                      disabled={pending || !canMutate}
+                    >
+                      <span className="flex w-full min-w-0 items-center justify-between gap-3">
+                        <span className="min-w-0 truncate">
+                          {option.label}
+                          {option.isDefault ? (
+                            <>
+                              {" "}
+                              <DefaultBadge />
+                            </>
+                          ) : null}
+                        </span>
+                      </span>
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+              ) : (
+                <MenuRadioGroup
+                  value={selectedValue === true ? "on" : "off"}
+                  onValueChange={(value) => handleGlobalChange(value === "on")}
+                >
+                  {(["on", "off"] as const).map((value) => (
+                    <MenuRadioItem
+                      key={value}
+                      value={value}
+                      hideIndicator
+                      disabled={pending || !canMutate}
+                    >
+                      <span>{value === "on" ? "On" : "Off"}</span>
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+              )}
+            </MenuGroup>
+          </div>
+        );
+      })}
     </>
   );
 });
@@ -429,6 +571,9 @@ export function buildTraitsTriggerDisplay(input: {
   if (labels.length === 0 && hasFastMode) {
     return { label: fastModeEnabled ? "Fast" : "Normal", showFastModeIcon: false };
   }
+  if (labels.length === 0 && input.descriptors.length === 0) {
+    return { label: "Options", showFastModeIcon: false };
+  }
   return { label: labels.join(" · "), showFastModeIcon: fastModeEnabled };
 }
 
@@ -441,12 +586,16 @@ export const TraitsPicker = memo(function TraitsPicker({
   onPromptChange,
   modelOptions,
   allowPromptInjectedEffort = true,
+  globalOptions = EMPTY_PROVIDER_GLOBAL_OPTIONS,
+  pendingGlobalOptionIds = EMPTY_PENDING_GLOBAL_OPTION_IDS,
+  onSetGlobalOption,
+  onGlobalOptionError,
   triggerVariant,
   triggerClassName,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled } =
+  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled, hasAnyControls } =
     getTraitsSectionVisibility({
       provider,
       models,
@@ -454,17 +603,10 @@ export const TraitsPicker = memo(function TraitsPicker({
       prompt,
       modelOptions,
       allowPromptInjectedEffort,
+      globalOptions,
+      pendingGlobalOptionIds,
     });
-  if (
-    !shouldRenderTraitsControls({
-      provider,
-      models,
-      model,
-      prompt,
-      modelOptions,
-      allowPromptInjectedEffort,
-    })
-  ) {
+  if (!hasAnyControls) {
     return null;
   }
 
@@ -500,6 +642,7 @@ export const TraitsPicker = memo(function TraitsPicker({
         render={
           <ComposerControl
             variant={triggerVariant ?? "ghost"}
+            {...(triggerLabel === "Options" ? { "aria-label": "Options" } : {})}
             className={cn(
               isCodexStyle
                 ? "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
@@ -533,6 +676,10 @@ export const TraitsPicker = memo(function TraitsPicker({
           onPromptChange={onPromptChange}
           modelOptions={modelOptions}
           allowPromptInjectedEffort={allowPromptInjectedEffort}
+          globalOptions={globalOptions}
+          pendingGlobalOptionIds={pendingGlobalOptionIds}
+          {...(onSetGlobalOption ? { onSetGlobalOption } : {})}
+          {...(onGlobalOptionError ? { onGlobalOptionError } : {})}
           {...persistence}
         />
       </MenuPopup>

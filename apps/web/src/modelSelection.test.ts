@@ -33,6 +33,7 @@ function provider(input: {
       isCustom: false,
       capabilities: {},
     })),
+    globalOptions: [],
     slashCommands: [],
     skills: [],
   };

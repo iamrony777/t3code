@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind, type ProviderOptionDescriptor } from "@t3tools/contracts";
-import { buildTraitsTriggerDisplay } from "./TraitsPicker";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderGlobalOption,
+  type ProviderOptionDescriptor,
+} from "@t3tools/contracts";
+import {
+  buildTraitsMenuSections,
+  buildTraitsTriggerDisplay,
+  runProviderGlobalOptionChange,
+  TraitsPicker,
+} from "./TraitsPicker";
 
 function selectDescriptor(
   id: string,
@@ -34,6 +46,27 @@ const CONTEXT_WINDOW = selectDescriptor(
 );
 
 const CODEX = ProviderDriverKind.make("codex");
+const COMMAND_CODE = ProviderDriverKind.make("commandCode");
+const COMMAND_CODE_INSTANCE = ProviderInstanceId.make("commandCode");
+
+const GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [
+  {
+    id: "compactMode",
+    label: "Compact Mode",
+    type: "select",
+    currentValue: "normal",
+    options: [
+      { id: "normal", label: "Normal", isDefault: true },
+      { id: "fast", label: "Fast" },
+    ],
+  },
+  {
+    id: "tasteLearning",
+    label: "Taste Learning",
+    type: "boolean",
+    currentValue: false,
+  },
+];
 
 function display(descriptors: ReadonlyArray<ProviderOptionDescriptor>) {
   return buildTraitsTriggerDisplay({
@@ -128,5 +161,92 @@ describe("buildTraitsTriggerDisplay", () => {
         ultrathinkPromptControlled: true,
       }),
     ).toEqual({ label: "Ultrathink", showFastModeIcon: true });
+  });
+
+  it("keeps provider-global values out of the reasoning trigger", () => {
+    expect(
+      buildTraitsTriggerDisplay({
+        provider: COMMAND_CODE,
+        descriptors: [EFFORT],
+        primarySelectDescriptorId: "reasoningEffort",
+        ultrathinkPromptControlled: false,
+      }),
+    ).toEqual({ label: "High", showFastModeIcon: false });
+  });
+
+  it("gives a global-only traits trigger a stable accessible label", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TraitsPicker, {
+        provider: COMMAND_CODE,
+        instanceId: COMMAND_CODE_INSTANCE,
+        models: [
+          {
+            slug: "fixed-model",
+            name: "Fixed Model",
+            isCustom: false,
+            capabilities: { optionDescriptors: [] },
+          },
+        ],
+        model: "fixed-model",
+        prompt: "",
+        onPromptChange: () => {},
+        onModelOptionsChange: () => {},
+        globalOptions: GLOBAL_OPTIONS,
+        onSetGlobalOption: async () => {},
+      }),
+    );
+
+    expect(markup).toContain('aria-label="Options"');
+    expect(markup).toContain(">Options<");
+    expect(markup).not.toContain(">Fast<");
+    expect(markup).not.toContain("Taste Learning On");
+  });
+});
+
+describe("Command Code global traits", () => {
+  it("renders Reasoning, Compact Mode, then Taste Learning with dividers", () => {
+    expect(buildTraitsMenuSections([EFFORT], GLOBAL_OPTIONS, new Set())).toEqual([
+      { domain: "model", descriptor: EFFORT, separatorBefore: false, pending: false },
+      { domain: "global", descriptor: GLOBAL_OPTIONS[0], separatorBefore: true, pending: false },
+      { domain: "global", descriptor: GLOBAL_OPTIONS[1], separatorBefore: true, pending: false },
+    ]);
+  });
+
+  it("renders global sections when the model has no reasoning descriptor", () => {
+    expect(buildTraitsMenuSections([], GLOBAL_OPTIONS, new Set())).toEqual([
+      { domain: "global", descriptor: GLOBAL_OPTIONS[0], separatorBefore: false, pending: false },
+      { domain: "global", descriptor: GLOBAL_OPTIONS[1], separatorBefore: true, pending: false },
+    ]);
+  });
+
+  it("disables only the pending global section", () => {
+    const sections = buildTraitsMenuSections([EFFORT], GLOBAL_OPTIONS, new Set(["compactMode"]));
+
+    expect(sections.map(({ descriptor, pending }) => [descriptor.id, pending])).toEqual([
+      ["reasoningEffort", false],
+      ["compactMode", true],
+      ["tasteLearning", false],
+    ]);
+  });
+
+  it("routes a global change without mutating the displayed snapshot on failure", async () => {
+    const onSetGlobalOption = vi.fn().mockRejectedValue(new Error("native write failed"));
+    const onGlobalOptionError = vi.fn();
+
+    await runProviderGlobalOptionChange({
+      instanceId: COMMAND_CODE_INSTANCE,
+      option: GLOBAL_OPTIONS[0]!,
+      value: "fast",
+      onSetGlobalOption,
+      onGlobalOptionError,
+    });
+
+    expect(onSetGlobalOption).toHaveBeenCalledWith({
+      instanceId: COMMAND_CODE_INSTANCE,
+      optionId: "compactMode",
+      value: "fast",
+    });
+    expect(onGlobalOptionError).toHaveBeenCalledWith("native write failed");
+    expect(GLOBAL_OPTIONS[0]?.currentValue).toBe("normal");
   });
 });

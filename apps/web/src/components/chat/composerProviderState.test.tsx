@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { ReactElement } from "react";
 import {
+  EnvironmentId,
   ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderGlobalOption,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  buildProviderGlobalOptionPendingKey,
+  buildProviderGlobalOptionMutationTarget,
   getComposerPromptInjectionState,
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
+  runTrackedProviderGlobalOptionMutation,
+  selectPendingProviderGlobalOptionIds,
+  updateProviderGlobalOptionPendingCounts,
 } from "./composerProviderState";
+import { DraftId } from "../../composerDraftStore";
 
 // Everything in composerProviderState is now data-driven by the model's
 // optionDescriptors, so these tests use a single synthetic provider/model and
@@ -18,6 +28,20 @@ import {
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
+const INSTANCE_ID = ProviderInstanceId.make("commandCode");
+const ENVIRONMENT_ID = EnvironmentId.make("env-test");
+const GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [
+  {
+    id: "compactMode",
+    label: "Compact Mode",
+    type: "select",
+    currentValue: "normal",
+    options: [
+      { id: "normal", label: "Normal", isDefault: true },
+      { id: "fast", label: "Fast" },
+    ],
+  },
+];
 
 function selectDescriptor(
   id: string,
@@ -244,5 +268,147 @@ describe("provider traits render guards", () => {
 
     expect(renderProviderTraitsPicker(args)).toBeNull();
     expect(renderProviderTraitsMenuContent(args)).toBeNull();
+  });
+
+  it("renders global controls without model descriptors and keeps the selected instance", () => {
+    const node = renderProviderTraitsPicker({
+      provider: PROVIDER,
+      instanceId: INSTANCE_ID,
+      draftId: DraftId.make("draft-test"),
+      model: MODEL,
+      models: modelWith([]),
+      modelOptions: undefined,
+      globalOptions: GLOBAL_OPTIONS,
+      prompt: "",
+      onPromptChange: () => {},
+      onSetGlobalOption: async () => {},
+    });
+
+    expect(node).not.toBeNull();
+    const element = node as ReactElement<{
+      instanceId?: ProviderInstanceId;
+      globalOptions?: ReadonlyArray<ProviderGlobalOption>;
+    }>;
+    expect(element.props.instanceId).toBe(INSTANCE_ID);
+    expect(element.props.globalOptions).toBe(GLOBAL_OPTIONS);
+  });
+
+  it("builds the environment-scoped RPC target from the selected instance", () => {
+    expect(
+      buildProviderGlobalOptionMutationTarget(ENVIRONMENT_ID, {
+        instanceId: INSTANCE_ID,
+        optionId: "tasteLearning",
+        value: true,
+      }),
+    ).toEqual({
+      environmentId: ENVIRONMENT_ID,
+      input: {
+        instanceId: INSTANCE_ID,
+        optionId: "tasteLearning",
+        value: true,
+      },
+    });
+  });
+
+  it("keeps concurrent Compact and Taste mutations pending independently", async () => {
+    let releaseCompact: (() => void) | undefined;
+    let releaseTaste: (() => void) | undefined;
+    const compactGate = new Promise<void>((resolve) => {
+      releaseCompact = resolve;
+    });
+    const tasteGate = new Promise<void>((resolve) => {
+      releaseTaste = resolve;
+    });
+    let pending: ReadonlyMap<string, number> = new Map();
+    const updatePending = (
+      update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>,
+    ) => {
+      pending = update(pending);
+    };
+    const compact = runTrackedProviderGlobalOptionMutation({
+      environmentId: ENVIRONMENT_ID,
+      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "fast" },
+      updatePending,
+      run: () => compactGate,
+    });
+    const taste = runTrackedProviderGlobalOptionMutation({
+      environmentId: ENVIRONMENT_ID,
+      mutation: { instanceId: INSTANCE_ID, optionId: "tasteLearning", value: true },
+      updatePending,
+      run: () => tasteGate,
+    });
+
+    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
+      ["compactMode", "tasteLearning"],
+    );
+
+    releaseCompact?.();
+    await compact;
+    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
+      ["tasteLearning"],
+    );
+
+    releaseTaste?.();
+    await taste;
+    expect(pending.size).toBe(0);
+  });
+
+  it("keeps one option pending until overlapping values settle in reverse order", async () => {
+    let releaseFast: (() => void) | undefined;
+    let releaseNormal: (() => void) | undefined;
+    const fastGate = new Promise<void>((resolve) => {
+      releaseFast = resolve;
+    });
+    const normalGate = new Promise<void>((resolve) => {
+      releaseNormal = resolve;
+    });
+    let pending: ReadonlyMap<string, number> = new Map();
+    const updatePending = (
+      update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>,
+    ) => {
+      pending = update(pending);
+    };
+    const fast = runTrackedProviderGlobalOptionMutation({
+      environmentId: ENVIRONMENT_ID,
+      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "fast" },
+      updatePending,
+      run: () => fastGate,
+    });
+    const normal = runTrackedProviderGlobalOptionMutation({
+      environmentId: ENVIRONMENT_ID,
+      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "normal" },
+      updatePending,
+      run: () => normalGate,
+    });
+
+    releaseNormal?.();
+    await normal;
+    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
+      ["compactMode"],
+    );
+
+    releaseFast?.();
+    await fast;
+    expect(pending.size).toBe(0);
+  });
+
+  it("does not inherit pending options when the environment or instance changes", () => {
+    const pending = updateProviderGlobalOptionPendingCounts(
+      new Map(),
+      buildProviderGlobalOptionPendingKey(ENVIRONMENT_ID, INSTANCE_ID, "compactMode"),
+      1,
+    );
+
+    expect(
+      selectPendingProviderGlobalOptionIds(pending, EnvironmentId.make("env-other"), INSTANCE_ID)
+        .size,
+    ).toBe(0);
+    expect(
+      selectPendingProviderGlobalOptionIds(
+        pending,
+        ENVIRONMENT_ID,
+        ProviderInstanceId.make("commandCode-other"),
+      ).size,
+    ).toBe(0);
   });
 });

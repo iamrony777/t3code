@@ -67,6 +67,7 @@ function provider(input: {
     auth: { status: "authenticated" },
     checkedAt,
     models: [],
+    globalOptions: [],
     slashCommands: [],
     skills: [],
     versionAdvisory: {

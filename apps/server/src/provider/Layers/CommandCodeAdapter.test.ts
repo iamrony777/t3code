@@ -5,6 +5,7 @@ import {
   CommandCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -18,25 +19,122 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import type {
-  CommandCodeEffortCapability,
-  CommandCodeReasoningEffortValidator,
-} from "../commandCodeCatalog.ts";
-import { makeCommandCodeAdapter } from "./CommandCodeAdapter.ts";
+import type { CommandCodeEffortCapability } from "../commandCodeCatalog.ts";
+import { commandCodeProjectSlugCandidate } from "../commandCodeTranscript.ts";
+import {
+  type CommandCodeAdapterCatalogController,
+  makeCommandCodeAdapter,
+} from "./CommandCodeAdapter.ts";
 
 const decodeSettings = Schema.decodeSync(CommandCodeSettings);
 const provider = ProviderDriverKind.make("commandcode");
 const instanceId = ProviderInstanceId.make("commandcode");
 const effortValidator = (
   capabilities: Readonly<Record<string, CommandCodeEffortCapability>> = {},
-): CommandCodeReasoningEffortValidator => ({
+  contextWindows: Readonly<Record<string, number | undefined>> = {},
+): CommandCodeAdapterCatalogController => ({
   supportsReasoningEffort: (model, reasoningEffort) => {
     const capability = capabilities[model];
     return Effect.succeed(
       capability?.kind === "adjustable" && capability.values.includes(reasoningEffort),
     );
   },
+  getModelContextWindow: (model) => Effect.succeed(contextWindows[model]),
 });
+
+const eventUsage = (event: ProviderRuntimeEvent) => {
+  if (event.type !== "thread.token-usage.updated") {
+    throw new Error(`Expected token usage event, received ${event.type}`);
+  }
+  return event.payload.usage;
+};
+
+const nativeUsageLine = (input: {
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+}) =>
+  JSON.stringify({
+    type: "message",
+    id: "message",
+    message: { role: "assistant", content: [] },
+    model: input.model,
+    usage: {
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      cacheReadTokens: input.cacheReadTokens,
+      cacheWriteTokens: input.cacheWriteTokens,
+    },
+  });
+
+const resultFrame = (
+  sessionId: string,
+  usage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cacheReadTokens?: number;
+    readonly cacheWriteTokens?: number;
+  },
+) =>
+  JSON.stringify({
+    type: "result",
+    subtype: "success",
+    sessionId,
+    usage,
+    durationMs: 25,
+    finalText: "done",
+  });
+
+const writeResultBinary = (
+  fs: FileSystem.FileSystem,
+  binaryPath: string,
+  sessionId: string,
+  results: ReadonlyArray<string>,
+) =>
+  fs
+    .writeFileString(
+      binaryPath,
+      [
+        "#!/bin/sh",
+        "cat >/dev/null",
+        'count_file="$COMMAND_CODE_COUNT_FILE"',
+        "count=0",
+        'if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi',
+        "count=$((count + 1))",
+        'printf \'%s\\n\' "$count" > "$count_file"',
+        `printf '%s\\n' '${JSON.stringify({ type: "event", event: { type: "run_start", sessionId } })}'`,
+        'case "$count" in',
+        ...results.flatMap((result, index) => [`  ${index + 1}) printf '%s\\n' '${result}' ;;`]),
+        `  *) printf '%s\\n' '${results.at(-1)}' ;;`,
+        "esac",
+      ].join("\n"),
+    )
+    .pipe(Effect.andThen(fs.chmod(binaryPath, 0o755)));
+
+const writeNativeTranscript = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  home: string,
+  cwd: string,
+  sessionId: string,
+  line: string,
+) => {
+  const projectDirectory = path.join(
+    home,
+    ".commandcode",
+    "projects",
+    commandCodeProjectSlugCandidate(cwd)!,
+  );
+  return fs
+    .makeDirectory(projectDirectory, { recursive: true })
+    .pipe(
+      Effect.andThen(
+        fs.writeFileString(path.join(projectDirectory, `${sessionId}.jsonl`), `${line}\n`),
+      ),
+    );
+};
 
 it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
   it.effect("streams a turn and resumes the next turn by explicit session id", () =>
@@ -115,7 +213,11 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           input: "first prompt",
           interactionMode: "default",
         });
-        expect(first.resumeCursor).toEqual({ schemaVersion: 1, sessionId: "session-123" });
+        expect(first.resumeCursor).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-123",
+          totalProcessedTokens: 0,
+        });
 
         const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
         expect(events.map((event) => event.type)).toEqual([
@@ -148,6 +250,27 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
             (event) => event.type === "item.completed" && event.payload.detail === "hello world",
           ),
         ).toBeDefined();
+        expect(events.find((event) => event.type === "thread.token-usage.updated")).toMatchObject({
+          payload: {
+            usage: {
+              usedTokens: 12,
+              totalProcessedTokens: 12,
+              inputTokens: 10,
+              cachedInputTokens: 0,
+              outputTokens: 2,
+              durationMs: 42,
+              compactsAutomatically: true,
+            },
+          },
+        });
+        expect(
+          events.find((event) => event.type === "thread.token-usage.updated")?.payload.usage,
+        ).not.toHaveProperty("maxTokens");
+        expect((yield* adapter.listSessions())[0]?.resumeCursor).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-123",
+          totalProcessedTokens: 12,
+        });
         expect(
           events.find(
             (event) =>
@@ -174,6 +297,11 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         yield* Effect.yieldNow;
         yield* adapter.sendTurn({ threadId, input: "second prompt" });
         yield* Fiber.join(secondEventsFiber).pipe(Effect.timeout("2 seconds"));
+        expect((yield* adapter.listSessions())[0]?.resumeCursor).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-123",
+          totalProcessedTokens: 24,
+        });
 
         const argumentLines = (yield* fs.readFileString(argsLog)).trim().split("\n");
         expect(argumentLines[0]).toContain("--permission-mode dont-ask");
@@ -481,7 +609,8 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const validationStarted = yield* Deferred.make<void>();
         const releaseValidation = yield* Deferred.make<void>();
         let validationCalls = 0;
-        const catalogController: CommandCodeReasoningEffortValidator = {
+        const catalogController: CommandCodeAdapterCatalogController = {
+          getModelContextWindow: effortValidator().getModelContextWindow,
           supportsReasoningEffort: () =>
             Effect.gen(function* () {
               validationCalls += 1;
@@ -531,6 +660,358 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         expect(validationCalls).toBe(2);
         expect(spawnCalls).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "reports native active context while cumulative aggregate grows across compaction",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-usage-" });
+          const home = path.join(dir, "home");
+          const cwd = path.join(dir, "workspace");
+          const binaryPath = path.join(dir, "command-code");
+          const countFile = path.join(dir, "count");
+          const sessionId = "session-active";
+          yield* fs.makeDirectory(cwd, { recursive: true });
+          yield* writeResultBinary(fs, binaryPath, sessionId, [
+            resultFrame(sessionId, {
+              inputTokens: 70_000,
+              outputTokens: 5_000,
+              cacheReadTokens: 30_000,
+              cacheWriteTokens: 10_000,
+            }),
+            resultFrame(sessionId, {
+              inputTokens: 12_000,
+              outputTokens: 2_000,
+              cacheReadTokens: 4_000,
+              cacheWriteTokens: 2_000,
+            }),
+          ]);
+          yield* writeNativeTranscript(
+            fs,
+            path,
+            home,
+            cwd,
+            sessionId,
+            nativeUsageLine({
+              model: "model/active",
+              inputTokens: 20_000,
+              outputTokens: 4_000,
+              cacheReadTokens: 10_000,
+              cacheWriteTokens: 5_000,
+            }),
+          );
+          const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+            instanceId,
+            catalogController: effortValidator({}, { "model/active": 200_000 }),
+            environment: { HOME: home, PATH: process.env.PATH, COMMAND_CODE_COUNT_FILE: countFile },
+          });
+          const threadId = ThreadId.make("thread-command-code-active");
+          yield* adapter.startSession({
+            provider,
+            providerInstanceId: instanceId,
+            threadId,
+            cwd,
+            runtimeMode: "approval-required",
+            modelSelection: { instanceId, model: "model/active", options: [] },
+          });
+
+          const firstUsageFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          yield* adapter.sendTurn({ threadId, input: "first" });
+          const firstUsage = Option.getOrThrow(yield* Fiber.join(firstUsageFiber));
+          const firstSnapshot = eventUsage(firstUsage);
+          expect(firstSnapshot).toEqual({
+            usedTokens: 39_000,
+            totalProcessedTokens: 115_000,
+            maxTokens: 200_000,
+            inputTokens: 20_000,
+            cachedInputTokens: 10_000,
+            outputTokens: 4_000,
+            durationMs: 25,
+            compactsAutomatically: true,
+          });
+
+          yield* writeNativeTranscript(
+            fs,
+            path,
+            home,
+            cwd,
+            sessionId,
+            nativeUsageLine({
+              model: "model/active",
+              inputTokens: 10_000,
+              outputTokens: 3_000,
+              cacheReadTokens: 8_000,
+              cacheWriteTokens: 4_000,
+            }),
+          );
+          const secondUsageFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          yield* adapter.sendTurn({ threadId, input: "second" });
+          const secondUsage = Option.getOrThrow(yield* Fiber.join(secondUsageFiber));
+          const secondSnapshot = eventUsage(secondUsage);
+          expect(secondSnapshot).toMatchObject({
+            usedTokens: 25_000,
+            totalProcessedTokens: 135_000,
+            maxTokens: 200_000,
+          });
+          expect(secondSnapshot.usedTokens).toBeLessThan(firstSnapshot.usedTokens);
+        }),
+      ),
+  );
+
+  it.effect("uses equal active and aggregate usage for a single call", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-single-" });
+        const home = path.join(dir, "home");
+        const cwd = path.join(dir, "workspace");
+        const binaryPath = path.join(dir, "command-code");
+        const sessionId = "session-single";
+        yield* fs.makeDirectory(cwd, { recursive: true });
+        yield* writeResultBinary(fs, binaryPath, sessionId, [
+          resultFrame(sessionId, {
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 4,
+          }),
+        ]);
+        yield* writeNativeTranscript(
+          fs,
+          path,
+          home,
+          cwd,
+          sessionId,
+          nativeUsageLine({
+            model: "model/single",
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 4,
+          }),
+        );
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator({}, { "model/single": 100_000 }),
+          environment: {
+            HOME: home,
+            PATH: process.env.PATH,
+            COMMAND_CODE_COUNT_FILE: path.join(dir, "count"),
+          },
+        });
+        const threadId = ThreadId.make("thread-command-code-single");
+        const usageFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "one" });
+        expect(eventUsage(Option.getOrThrow(yield* Fiber.join(usageFiber)))).toMatchObject({
+          usedTokens: 19,
+          totalProcessedTokens: 19,
+          maxTokens: 100_000,
+        });
+      }),
+    ),
+  );
+
+  it.effect(
+    "uses exact catalog max tokens with aggregate usage when the transcript is missing",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const dir = yield* fs.makeTempDirectoryScoped({
+            prefix: "t3-command-code-no-transcript-",
+          });
+          const binaryPath = path.join(dir, "command-code");
+          const sessionId = "session-no-transcript";
+          yield* writeResultBinary(fs, binaryPath, sessionId, [
+            resultFrame(sessionId, {
+              inputTokens: 10,
+              outputTokens: 2,
+              cacheReadTokens: 3,
+              cacheWriteTokens: 4,
+            }),
+          ]);
+          const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+            instanceId,
+            catalogController: effortValidator({}, { "model/known": 100_000 }),
+            environment: {
+              HOME: path.join(dir, "home"),
+              PATH: process.env.PATH,
+              COMMAND_CODE_COUNT_FILE: path.join(dir, "count"),
+            },
+          });
+          const threadId = ThreadId.make("thread-command-code-no-transcript");
+          const usageFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* adapter.startSession({
+            provider,
+            providerInstanceId: instanceId,
+            threadId,
+            cwd: dir,
+            runtimeMode: "approval-required",
+            modelSelection: { instanceId, model: "model/known", options: [] },
+          });
+          yield* adapter.sendTurn({ threadId, input: "missing" });
+          const usage = eventUsage(Option.getOrThrow(yield* Fiber.join(usageFiber)));
+          expect(usage).toMatchObject({
+            usedTokens: 19,
+            totalProcessedTokens: 19,
+            maxTokens: 100_000,
+            inputTokens: 10,
+            cachedInputTokens: 3,
+            outputTokens: 2,
+          });
+        }),
+      ),
+  );
+
+  it.effect("keeps active usage but omits max tokens when exact API metadata is unavailable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-no-api-" });
+        const home = path.join(dir, "home");
+        const cwd = path.join(dir, "workspace");
+        const binaryPath = path.join(dir, "command-code");
+        const sessionId = "session-no-api";
+        yield* fs.makeDirectory(cwd, { recursive: true });
+        yield* writeResultBinary(fs, binaryPath, sessionId, [
+          resultFrame(sessionId, { inputTokens: 10, outputTokens: 2 }),
+        ]);
+        yield* writeNativeTranscript(
+          fs,
+          path,
+          home,
+          cwd,
+          sessionId,
+          nativeUsageLine({
+            model: "model/no-api",
+            inputTokens: 30,
+            outputTokens: 5,
+            cacheReadTokens: 7,
+            cacheWriteTokens: 11,
+          }),
+        );
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: {
+            HOME: home,
+            PATH: process.env.PATH,
+            COMMAND_CODE_COUNT_FILE: path.join(dir, "count"),
+          },
+        });
+        const threadId = ThreadId.make("thread-command-code-no-api");
+        const usageFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "active" });
+        const usage = eventUsage(Option.getOrThrow(yield* Fiber.join(usageFiber)));
+        expect(usage).toMatchObject({
+          usedTokens: 53,
+          inputTokens: 30,
+          cachedInputTokens: 7,
+          outputTokens: 5,
+        });
+        expect(usage).not.toHaveProperty("maxTokens");
+      }),
+    ),
+  );
+
+  it.effect("accepts v1 cursors and carries v2 cumulative totals into a new adapter", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstAdapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const v1Thread = ThreadId.make("thread-command-code-v1");
+        const v1Session = yield* firstAdapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId: v1Thread,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          resumeCursor: { schemaVersion: 1, sessionId: "session-v1" },
+        });
+        expect(v1Session.resumeCursor).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-v1",
+          totalProcessedTokens: 0,
+        });
+
+        const resumedAdapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const resumed = yield* resumedAdapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId: ThreadId.make("thread-command-code-v2"),
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          resumeCursor: {
+            schemaVersion: 2,
+            sessionId: "session-v2",
+            totalProcessedTokens: 135_000,
+          },
+        });
+        expect(resumed.resumeCursor).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-v2",
+          totalProcessedTokens: 135_000,
+        });
       }),
     ),
   );

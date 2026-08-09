@@ -23,6 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
@@ -38,6 +39,10 @@ import {
 } from "../commandCodeCli.ts";
 import type { CommandCodeReasoningEffortValidator } from "../commandCodeCatalog.ts";
 import {
+  makeCommandCodeTranscriptReader,
+  type CommandCodeTranscriptUsage,
+} from "../commandCodeTranscript.ts";
+import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -47,14 +52,18 @@ import {
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("commandcode");
-const RESUME_VERSION = 1 as const;
+const RESUME_VERSION = 2 as const;
 const START_TIMEOUT_MS = 10_000;
 
 export interface CommandCodeAdapterOptions {
-  readonly catalogController: CommandCodeReasoningEffortValidator;
+  readonly catalogController: CommandCodeAdapterCatalogController;
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
   readonly startupTimeoutMs?: number;
+}
+
+export interface CommandCodeAdapterCatalogController extends CommandCodeReasoningEffortValidator {
+  readonly getModelContextWindow: (modelSlug: string) => Effect.Effect<number | undefined>;
 }
 
 interface TurnState {
@@ -81,9 +90,11 @@ interface TurnState {
 
 interface CommandCodeSessionContext {
   readonly threadId: ThreadId;
+  readonly cwd: string;
   readonly scope: Scope.Closeable;
   session: ProviderSession;
   resumeSessionId: string | undefined;
+  totalProcessedTokens: number;
   reasoningEffort: string | undefined;
   activeChild: ChildProcessHandle | undefined;
   activeFiber: Fiber.Fiber<void, never> | undefined;
@@ -93,13 +104,24 @@ interface CommandCodeSessionContext {
   stopped: boolean;
 }
 
-function parseResumeCursor(raw: unknown): string | undefined {
+interface ParsedResumeCursor {
+  readonly sessionId: string;
+  readonly totalProcessedTokens: number;
+}
+
+function parseResumeCursor(raw: unknown): ParsedResumeCursor | undefined {
   if (!Predicate.isObject(raw) || Array.isArray(raw)) return undefined;
   const cursor: Record<string, unknown> = raw;
+  if (typeof cursor.sessionId !== "string" || cursor.sessionId.trim().length === 0) {
+    return undefined;
+  }
+  const sessionId = cursor.sessionId.trim();
+  if (cursor.schemaVersion === 1) return { sessionId, totalProcessedTokens: 0 };
   return cursor.schemaVersion === RESUME_VERSION &&
-    typeof cursor.sessionId === "string" &&
-    cursor.sessionId.trim().length > 0
-    ? cursor.sessionId.trim()
+    typeof cursor.totalProcessedTokens === "number" &&
+    Number.isInteger(cursor.totalProcessedTokens) &&
+    cursor.totalProcessedTokens >= 0
+    ? { sessionId, totalProcessedTokens: cursor.totalProcessedTokens }
     : undefined;
 }
 
@@ -111,7 +133,7 @@ function eventString(event: Readonly<Record<string, unknown>>, ...keys: Readonly
   return undefined;
 }
 
-function usageSnapshot(usage: unknown, durationMs: number) {
+function aggregateUsageSnapshot(usage: unknown, durationMs: number) {
   const record = Predicate.isObject(usage) && !Array.isArray(usage) ? usage : {};
   const readCount = (...keys: ReadonlyArray<string>) => {
     for (const key of keys) {
@@ -122,11 +144,37 @@ function usageSnapshot(usage: unknown, durationMs: number) {
   };
   const inputTokens = readCount("inputTokens", "input_tokens") ?? 0;
   const outputTokens = readCount("outputTokens", "output_tokens") ?? 0;
+  const cachedInputTokens = readCount("cacheReadTokens", "cache_read_tokens") ?? 0;
+  const cacheWriteTokens = readCount("cacheWriteTokens", "cache_write_tokens") ?? 0;
   return {
-    usedTokens: inputTokens + outputTokens,
+    usedTokens: inputTokens + outputTokens + cachedInputTokens + cacheWriteTokens,
+    // The wire contract has no cache-write component, so keep the native input
+    // breakdown intact while including cache writes in the full context total.
     inputTokens,
+    cachedInputTokens,
     outputTokens,
     durationMs: Math.max(0, Math.round(durationMs)),
+    compactsAutomatically: true,
+  };
+}
+
+function activeUsageSnapshot(
+  usage: CommandCodeTranscriptUsage,
+  durationMs: number,
+  totalProcessedTokens: number,
+  maxTokens: number | undefined,
+) {
+  return {
+    usedTokens:
+      usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+    totalProcessedTokens,
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    // Cache writes contribute to usedTokens but are not folded into native input.
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cacheReadTokens,
+    outputTokens: usage.outputTokens,
+    durationMs: Math.max(0, Math.round(durationMs)),
+    compactsAutomatically: true,
   };
 }
 
@@ -169,7 +217,11 @@ export function makeCommandCodeAdapter(
 ): Effect.Effect<
   ProviderAdapterShape<ProviderAdapterError>,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Path.Path | Scope.Scope
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | Scope.Scope
 > {
   return Effect.gen(function* () {
     const instanceId = options.instanceId ?? ProviderInstanceId.make("commandcode");
@@ -180,6 +232,7 @@ export function makeCommandCodeAdapter(
     const platform = yield* HostProcessPlatform;
     const startupTimeoutMs = options.startupTimeoutMs ?? START_TIMEOUT_MS;
     const catalogController = options.catalogController;
+    const transcriptReader = yield* makeCommandCodeTranscriptReader(environment);
     const adapterScope = yield* Scope.Scope;
     const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, CommandCodeSessionContext>();
@@ -356,7 +409,11 @@ export function makeCommandCodeAdapter(
               ctx.resumeSessionId = sessionId;
               ctx.session = {
                 ...ctx.session,
-                resumeCursor: { schemaVersion: RESUME_VERSION, sessionId },
+                resumeCursor: {
+                  schemaVersion: RESUME_VERSION,
+                  sessionId,
+                  totalProcessedTokens: ctx.totalProcessedTokens,
+                },
               };
               yield* Deferred.succeed(resumeReady, sessionId).pipe(Effect.ignore);
             }
@@ -638,14 +695,22 @@ export function makeCommandCodeAdapter(
       resumeReady: Deferred.Deferred<string, ProviderAdapterProcessError>,
     ) =>
       Effect.gen(function* () {
+        const aggregateUsage = aggregateUsageSnapshot(result.usage, result.durationMs);
+        ctx.totalProcessedTokens += aggregateUsage.usedTokens;
         if (result.sessionId) {
           ctx.resumeSessionId = result.sessionId;
-          ctx.session = {
-            ...ctx.session,
-            resumeCursor: { schemaVersion: RESUME_VERSION, sessionId: result.sessionId },
-          };
         }
         const resumeSessionId = result.sessionId ?? ctx.resumeSessionId;
+        if (resumeSessionId !== undefined) {
+          ctx.session = {
+            ...ctx.session,
+            resumeCursor: {
+              schemaVersion: RESUME_VERSION,
+              sessionId: resumeSessionId,
+              totalProcessedTokens: ctx.totalProcessedTokens,
+            },
+          };
+        }
         const successful = result.subtype === "success" && resumeSessionId !== undefined;
         if (successful) {
           yield* Deferred.succeed(resumeReady, resumeSessionId).pipe(Effect.ignore);
@@ -679,10 +744,36 @@ export function makeCommandCodeAdapter(
         }
         yield* completeReasoning(ctx, turn);
         yield* completeAssistant(ctx, turn);
+        const activeUsage =
+          resumeSessionId === undefined
+            ? undefined
+            : yield* transcriptReader.readLatestUsage({
+                cwd: ctx.cwd,
+                sessionId: resumeSessionId,
+              });
+        const contextModel = activeUsage?.model ?? ctx.session.model;
+        const maxTokens =
+          contextModel === undefined
+            ? undefined
+            : yield* catalogController.getModelContextWindow(contextModel);
         yield* publish({
           type: "thread.token-usage.updated",
           ...(yield* base(ctx, turn.turnId)),
-          payload: { usage: usageSnapshot(result.usage, result.durationMs) },
+          payload: {
+            usage:
+              activeUsage === undefined
+                ? {
+                    ...aggregateUsage,
+                    totalProcessedTokens: ctx.totalProcessedTokens,
+                    ...(maxTokens !== undefined ? { maxTokens } : {}),
+                  }
+                : activeUsageSnapshot(
+                    activeUsage,
+                    result.durationMs,
+                    ctx.totalProcessedTokens,
+                    maxTokens,
+                  ),
+          },
         });
         yield* settleTurnState(ctx, turn);
         yield* publish({
@@ -718,7 +809,7 @@ export function makeCommandCodeAdapter(
         const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
         const child = yield* spawner.spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-            cwd: ctx.session.cwd,
+            cwd: ctx.cwd,
             env: environment,
             shell: spawnCommand.shell,
             detached: platform !== "win32",
@@ -850,30 +941,40 @@ export function makeCommandCodeAdapter(
           sessions.delete(input.threadId);
         }
         const now = DateTime.formatIso(yield* DateTime.now);
-        const resumeSessionId = parseResumeCursor(input.resumeCursor);
+        const resumeCursor = parseResumeCursor(input.resumeCursor);
+        const resumeSessionId = resumeCursor?.sessionId;
         const sessionScope = yield* Scope.make("sequential");
         const modelSelection =
           input.modelSelection?.instanceId === instanceId ? input.modelSelection : undefined;
         const model = modelSelection?.model ?? "deepseek/deepseek-v4-flash";
+        const cwd = path.resolve(input.cwd.trim());
         const session: ProviderSession = {
           provider: PROVIDER,
           providerInstanceId: instanceId,
           threadId: input.threadId,
-          cwd: path.resolve(input.cwd.trim()),
+          cwd,
           runtimeMode: input.runtimeMode,
           model,
           status: "ready",
           ...(resumeSessionId
-            ? { resumeCursor: { schemaVersion: RESUME_VERSION, sessionId: resumeSessionId } }
+            ? {
+                resumeCursor: {
+                  schemaVersion: RESUME_VERSION,
+                  sessionId: resumeSessionId,
+                  totalProcessedTokens: resumeCursor.totalProcessedTokens,
+                },
+              }
             : {}),
           createdAt: now,
           updatedAt: now,
         };
         const ctx: CommandCodeSessionContext = {
           threadId: input.threadId,
+          cwd,
           scope: sessionScope,
           session,
           resumeSessionId,
+          totalProcessedTokens: resumeCursor?.totalProcessedTokens ?? 0,
           reasoningEffort: selectedReasoningEffort(modelSelection),
           activeChild: undefined,
           activeFiber: undefined,
@@ -1034,7 +1135,11 @@ export function makeCommandCodeAdapter(
             return {
               threadId: input.threadId,
               turnId,
-              resumeCursor: { schemaVersion: RESUME_VERSION, sessionId },
+              resumeCursor: {
+                schemaVersion: RESUME_VERSION,
+                sessionId,
+                totalProcessedTokens: ctx.totalProcessedTokens,
+              },
             };
           }),
         ({ ctx }) =>

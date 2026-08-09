@@ -91,7 +91,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       Effect.mapError(toPersistenceError("ProviderSessionDirectory.getBinding:getByThreadId")),
       Effect.flatMap((runtime) =>
         Option.match(runtime, {
-          onNone: () => Effect.succeed(Option.none<ProviderRuntimeBinding>()),
+          onNone: () => Effect.succeed(Option.none<ProviderRuntimeBindingWithMetadata>()),
           onSome: (value) =>
             toRuntimeBinding(value, "ProviderSessionDirectory.getBinding").pipe(
               Effect.map((binding) => Option.some(binding)),
@@ -148,6 +148,74 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
   });
 
+  const compareAndSet: ProviderSessionDirectoryShape["compareAndSet"] = Effect.fn(function* ({
+    expected,
+    binding,
+  }) {
+    if (binding.threadId !== expected.threadId) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderSessionDirectory.compareAndSet",
+        issue: "The replacement binding must target the observed threadId.",
+      });
+    }
+    const expectedProviderInstanceId = expected.providerInstanceId;
+    if (expectedProviderInstanceId === undefined) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderSessionDirectory.compareAndSet",
+        issue: "The observed binding must have a providerInstanceId.",
+      });
+    }
+
+    const providerChanged = expected.provider !== binding.provider;
+    const providerInstanceId =
+      binding.providerInstanceId ?? (providerChanged ? undefined : expectedProviderInstanceId);
+    if (providerInstanceId === undefined) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderSessionDirectory.compareAndSet",
+        issue: "providerInstanceId is required when replacing a provider binding.",
+      });
+    }
+
+    const next: ProviderSessionRuntime.ProviderSessionRuntime = {
+      threadId: binding.threadId,
+      providerName: binding.provider,
+      providerInstanceId,
+      adapterKey:
+        binding.adapterKey ??
+        (providerChanged ? binding.provider : (expected.adapterKey ?? binding.provider)),
+      runtimeMode: binding.runtimeMode ?? expected.runtimeMode ?? "full-access",
+      status: binding.status ?? expected.status ?? "running",
+      lastSeenAt: binding.lastSeenAt ?? DateTime.formatIso(yield* DateTime.now),
+      resumeCursor:
+        binding.resumeCursor !== undefined ? binding.resumeCursor : (expected.resumeCursor ?? null),
+      runtimePayload:
+        binding.runtimePayload !== undefined
+          ? binding.runtimePayload
+          : (expected.runtimePayload ?? null),
+    };
+    const unchanged = yield* repository
+      .compareAndSet({
+        expected: {
+          threadId: expected.threadId,
+          providerName: expected.provider,
+          providerInstanceId: expectedProviderInstanceId,
+          adapterKey: expected.adapterKey ?? expected.provider,
+          runtimeMode: expected.runtimeMode ?? "full-access",
+          status: expected.status ?? "running",
+          lastSeenAt: expected.lastSeenAt,
+          resumeCursor: expected.resumeCursor ?? null,
+          runtimePayload: expected.runtimePayload ?? null,
+        },
+        next,
+      })
+      .pipe(
+        Effect.mapError(toPersistenceError("ProviderSessionDirectory.compareAndSet:compareAndSet")),
+      );
+    return unchanged
+      ? Option.some(yield* toRuntimeBinding(next, "ProviderSessionDirectory.compareAndSet"))
+      : Option.none();
+  });
+
   const getProvider: ProviderSessionDirectoryShape["getProvider"] = (threadId) =>
     getBinding(threadId).pipe(
       Effect.flatMap((binding) =>
@@ -184,6 +252,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
 
   return {
     upsert,
+    compareAndSet,
     getProvider,
     getBinding,
     listThreadIds,

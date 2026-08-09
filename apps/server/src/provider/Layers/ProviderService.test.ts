@@ -23,6 +23,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -71,8 +72,10 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
+const commandCodeInstanceId = ProviderInstanceId.make("commandcode");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
+const COMMAND_CODE_DRIVER = ProviderDriverKind.make("commandcode");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 
 type LegacyProviderRuntimeEvent = {
@@ -274,12 +277,22 @@ const hasMetricSnapshot = (
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const commandCode = makeFakeCodexAdapter(COMMAND_CODE_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
-  const registry = makeAdapterRegistryMock({
+  const registryBase = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
+    [ProviderDriverKind.make("commandcode")]: commandCode.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
   });
+  let currentCommandCodeAdapter = commandCode.adapter;
+  const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+    ...registryBase,
+    getByInstance: (instanceId) =>
+      instanceId === commandCodeInstanceId
+        ? Effect.succeed(currentCommandCodeAdapter)
+        : registryBase.getByInstance(instanceId),
+  };
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -289,12 +302,76 @@ function makeProviderServiceLayer() {
     Layer.provide(SqlitePersistenceMemory),
   );
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  let nextBindingReadGate:
+    | {
+        readonly entered: Deferred.Deferred<void>;
+        readonly release: Deferred.Deferred<void>;
+      }
+    | undefined;
+  let nextTurnPersistenceGate:
+    | {
+        readonly entered: Deferred.Deferred<void>;
+        readonly release: Deferred.Deferred<void>;
+      }
+    | undefined;
+  const waitOnGate = (
+    gate:
+      | {
+          readonly entered: Deferred.Deferred<void>;
+          readonly release: Deferred.Deferred<void>;
+        }
+      | undefined,
+  ) =>
+    gate === undefined
+      ? Effect.void
+      : Deferred.succeed(gate.entered, undefined).pipe(
+          Effect.andThen(Deferred.await(gate.release)),
+        );
+  const gatedDirectoryLayer = Layer.effect(
+    ProviderSessionDirectory.ProviderSessionDirectory,
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      return {
+        ...directory,
+        upsert: (binding: ProviderSessionDirectory.ProviderRuntimeBinding) => {
+          const payload = binding.runtimePayload;
+          const isTurnPersistence =
+            payload !== null &&
+            typeof payload === "object" &&
+            !Array.isArray(payload) &&
+            "lastRuntimeEvent" in payload &&
+            payload.lastRuntimeEvent === "provider.sendTurn";
+          if (!isTurnPersistence || nextTurnPersistenceGate === undefined) {
+            return directory.upsert(binding);
+          }
+          const gate = nextTurnPersistenceGate;
+          nextTurnPersistenceGate = undefined;
+          return waitOnGate(gate).pipe(Effect.andThen(directory.upsert(binding)));
+        },
+        getBinding: (threadId: ThreadId) =>
+          directory.getBinding(threadId).pipe(
+            Effect.tap(() => {
+              const gate = nextBindingReadGate;
+              if (gate === undefined) return Effect.void;
+              nextBindingReadGate = undefined;
+              return waitOnGate(gate);
+            }),
+            Effect.tap(() => {
+              const gate = nextTurnPersistenceGate;
+              if (gate === undefined) return Effect.void;
+              nextTurnPersistenceGate = undefined;
+              return waitOnGate(gate);
+            }),
+          ),
+      } satisfies ProviderSessionDirectory.ProviderSessionDirectoryShape;
+    }),
+  ).pipe(Layer.provide(directoryLayer));
 
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
         Layer.provide(providerAdapterLayer),
-        Layer.provide(directoryLayer),
+        Layer.provide(gatedDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
@@ -305,7 +382,7 @@ function makeProviderServiceLayer() {
           ),
         ),
       ),
-      directoryLayer,
+      gatedDirectoryLayer,
 
       runtimeRepositoryLayer,
       NodeServices.layer,
@@ -315,8 +392,28 @@ function makeProviderServiceLayer() {
   return {
     codex,
     claude,
+    commandCode,
     cursor,
     layer,
+    setCurrentCommandCodeAdapter: (adapter: ProviderAdapterShape<ProviderAdapterError>) => {
+      currentCommandCodeAdapter = adapter;
+    },
+    gateNextDirectoryBindingRead: () => {
+      const gate = {
+        entered: Effect.runSync(Deferred.make<void>()),
+        release: Effect.runSync(Deferred.make<void>()),
+      };
+      nextBindingReadGate = gate;
+      return gate;
+    },
+    gateNextTurnPersistence: () => {
+      const gate = {
+        entered: Effect.runSync(Deferred.make<void>()),
+        release: Effect.runSync(Deferred.make<void>()),
+      };
+      nextTurnPersistenceGate = gate;
+      return gate;
+    },
   };
 }
 
@@ -1342,6 +1439,401 @@ routing.layer("ProviderServiceLive routing", (it) => {
         }
       }
     }),
+  );
+
+  it.effect("persists a completed turn cursor before adapter session recovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-completed-cursor");
+      const earlyCursor = {
+        schemaVersion: 2,
+        sessionId: "command-session",
+        totalProcessedTokens: 0,
+      };
+      const completedCursor = {
+        ...earlyCursor,
+        totalProcessedTokens: 115_000,
+      };
+      const modelSelection = createModelSelection(commandCodeInstanceId, "model/selected", [
+        { id: "reasoningEffort", value: "max" },
+      ]);
+      yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        cwd: "/tmp/project-command-code",
+        modelSelection,
+        runtimeMode: "full-access",
+      });
+      routing.commandCode.sendTurn.mockImplementationOnce((input) =>
+        Effect.succeed({
+          threadId: input.threadId,
+          turnId: asTurnId("turn-completed-cursor"),
+          resumeCursor: earlyCursor,
+        }),
+      );
+      yield* provider.sendTurn({ threadId, input: "work", attachments: [] });
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        status: "ready",
+        resumeCursor: completedCursor,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      }));
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-completed-cursor"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-completed-cursor"),
+        payload: { state: "completed" },
+      });
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(persisted.resumeCursor, completedCursor);
+
+      yield* routing.commandCode.stopAll();
+      routing.commandCode.startSession.mockClear();
+      yield* provider.sendTurn({ threadId, input: "recover", attachments: [] });
+      assert.equal(routing.commandCode.startSession.mock.calls.length, 1);
+      assert.deepEqual(
+        routing.commandCode.startSession.mock.calls[0]?.[0].resumeCursor,
+        completedCursor,
+      );
+      assert.deepEqual(
+        routing.commandCode.startSession.mock.calls[0]?.[0].modelSelection,
+        modelSelection,
+      );
+    }),
+  );
+
+  it.effect("does not overwrite a completed cursor with the early sendTurn cursor", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-command-code-early-cursor-race");
+      const earlyCursor = {
+        schemaVersion: 2,
+        sessionId: "command-session-race",
+        totalProcessedTokens: 10,
+      };
+      const completedCursor = {
+        ...earlyCursor,
+        totalProcessedTokens: 125_000,
+      };
+      yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        resumeCursor: earlyCursor,
+        runtimeMode: "full-access",
+      });
+      routing.commandCode.sendTurn.mockImplementationOnce((input) =>
+        Effect.succeed({
+          threadId: input.threadId,
+          turnId: asTurnId("turn-command-code-early-cursor-race"),
+          resumeCursor: earlyCursor,
+        }),
+      );
+      const gate = routing.gateNextTurnPersistence();
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      const sendTurn = yield* provider
+        .sendTurn({ threadId, input: "work", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(gate.entered);
+
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        status: "ready",
+        resumeCursor: completedCursor,
+      }));
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-command-code-early-cursor-race"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-command-code-early-cursor-race"),
+        payload: { state: "completed" },
+      });
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+      assert.deepEqual(
+        Option.getOrThrow(yield* directory.getBinding(threadId)).resumeCursor,
+        completedCursor,
+      );
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(sendTurn);
+      assert.deepEqual(
+        Option.getOrThrow(yield* directory.getBinding(threadId)).resumeCursor,
+        completedCursor,
+      );
+    }),
+  );
+
+  it.effect("does not snapshot Claude sessions on generic terminal events", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-claude-terminal-snapshot");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.claude.updateSession(threadId, (session) => ({
+        ...session,
+        status: "running",
+        resumeCursor: { opaque: "claude-not-ready" },
+      }));
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.claude.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-claude-terminal-snapshot"),
+        provider: CLAUDE_AGENT_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-claude-terminal-snapshot"),
+        payload: { state: "completed" },
+      });
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(persisted.resumeCursor, initial.resumeCursor);
+    }),
+  );
+
+  it.effect("does not let a stale Command Code adapter overwrite the current binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-stale-command-code-adapter");
+      yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        resumeCursor: { schemaVersion: 2, sessionId: "stale", totalProcessedTokens: 10 },
+      }));
+      const currentCursor = {
+        schemaVersion: 2,
+        sessionId: "current",
+        totalProcessedTokens: 20,
+      };
+      yield* directory.upsert({
+        threadId,
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: currentCursor,
+      });
+      routing.setCurrentCommandCodeAdapter(makeFakeCodexAdapter(COMMAND_CODE_DRIVER).adapter);
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-stale-command-code-adapter"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-stale-command-code-adapter"),
+        payload: { state: "completed" },
+      });
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(persisted.resumeCursor, currentCursor);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => routing.setCurrentCommandCodeAdapter(routing.commandCode.adapter)),
+      ),
+    ),
+  );
+
+  it.effect("does not let Command Code completion reclaim a rebound thread", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-rebound-command-code");
+      yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        resumeCursor: { schemaVersion: 2, sessionId: "stale", totalProcessedTokens: 10 },
+      }));
+      const reboundCursor = { opaque: "claude-current" };
+      yield* directory.upsert({
+        threadId,
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: reboundCursor,
+      });
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-rebound-command-code"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-rebound-command-code"),
+        payload: { state: "completed" },
+      });
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.equal(persisted.providerInstanceId, claudeAgentInstanceId);
+      assert.deepEqual(persisted.resumeCursor, reboundCursor);
+    }),
+  );
+
+  it.effect("does not overwrite a binding changed after Command Code ownership checks", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-command-code-ownership-race");
+      yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        resumeCursor: { schemaVersion: 2, sessionId: "stale", totalProcessedTokens: 10 },
+      }));
+      const gate = routing.gateNextDirectoryBindingRead();
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-command-code-ownership-race"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-command-code-ownership-race"),
+        payload: { state: "completed" },
+      });
+      yield* Deferred.await(gate.entered);
+
+      routing.setCurrentCommandCodeAdapter(makeFakeCodexAdapter(COMMAND_CODE_DRIVER).adapter);
+      const currentCursor = {
+        schemaVersion: 2,
+        sessionId: "current",
+        totalProcessedTokens: 20,
+      };
+      yield* directory.upsert({
+        threadId,
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: currentCursor,
+      });
+      yield* Deferred.succeed(gate.release, undefined);
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(persisted.resumeCursor, currentCursor);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => routing.setCurrentCommandCodeAdapter(routing.commandCode.adapter)),
+      ),
+    ),
+  );
+
+  it.effect("rolls back completion from an adapter replaced after its ownership check", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-command-code-adapter-race");
+      const initial = yield* provider.startSession(threadId, {
+        provider: COMMAND_CODE_DRIVER,
+        providerInstanceId: commandCodeInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const initialBinding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      routing.commandCode.updateSession(threadId, (session) => ({
+        ...session,
+        resumeCursor: { schemaVersion: 2, sessionId: "stale", totalProcessedTokens: 10 },
+      }));
+      const gate = routing.gateNextDirectoryBindingRead();
+      const completedEvent = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "turn.completed" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      routing.commandCode.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-command-code-adapter-race"),
+        provider: COMMAND_CODE_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-command-code-adapter-race"),
+        payload: { state: "completed" },
+      });
+      yield* Deferred.await(gate.entered);
+
+      routing.setCurrentCommandCodeAdapter(makeFakeCodexAdapter(COMMAND_CODE_DRIVER).adapter);
+      yield* Deferred.succeed(gate.release, undefined);
+      assert.equal(Option.isSome(yield* Fiber.join(completedEvent)), true);
+
+      const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(persisted.resumeCursor, initial.resumeCursor);
+      assert.deepEqual(persisted.runtimePayload, initialBinding.runtimePayload);
+      assert.equal(persisted.lastSeenAt, initialBinding.lastSeenAt);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => routing.setCurrentCommandCodeAdapter(routing.commandCode.adapter)),
+      ),
+    ),
   );
 
   it.effect("reuses persisted resume cursor when startSession is called after a restart", () =>

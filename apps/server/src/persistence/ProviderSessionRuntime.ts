@@ -74,6 +74,14 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
     ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
 
     /**
+     * Replace a row only when it still exactly matches the observed value.
+     */
+    readonly compareAndSet: (input: {
+      readonly expected: ProviderSessionRuntime;
+      readonly next: ProviderSessionRuntime;
+    }) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+
+    /**
      * Read provider runtime state by canonical thread id.
      */
     readonly getByThreadId: (
@@ -120,6 +128,13 @@ const ProviderSessionRuntimeRawDbRowSchema = Schema.Struct({
   resumeCursor: Schema.Unknown,
   runtimePayload: Schema.Unknown,
 });
+
+const CompareAndSetRuntimeRequestSchema = Schema.Struct({
+  expected: ProviderSessionRuntimeDbRowSchema,
+  next: ProviderSessionRuntimeDbRowSchema,
+});
+
+const UpdatedRuntimeRowSchema = Schema.Struct({ threadId: ThreadId });
 
 const decodeRuntimeRow = Schema.decodeUnknownEffect(ProviderSessionRuntimeDbRowSchema);
 
@@ -206,6 +221,34 @@ export const make = Effect.gen(function* () {
       `,
   });
 
+  const compareAndSetRuntimeRow = SqlSchema.findOneOption({
+    Request: CompareAndSetRuntimeRequestSchema,
+    Result: UpdatedRuntimeRowSchema,
+    execute: ({ expected, next }) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET
+          provider_name = ${next.providerName},
+          provider_instance_id = ${next.providerInstanceId},
+          adapter_key = ${next.adapterKey},
+          runtime_mode = ${next.runtimeMode},
+          status = ${next.status},
+          last_seen_at = ${next.lastSeenAt},
+          resume_cursor_json = ${next.resumeCursor},
+          runtime_payload_json = ${next.runtimePayload}
+        WHERE thread_id = ${expected.threadId}
+          AND provider_name IS ${expected.providerName}
+          AND provider_instance_id IS ${expected.providerInstanceId}
+          AND adapter_key IS ${expected.adapterKey}
+          AND runtime_mode IS ${expected.runtimeMode}
+          AND status IS ${expected.status}
+          AND last_seen_at IS ${expected.lastSeenAt}
+          AND resume_cursor_json IS ${expected.resumeCursor}
+          AND runtime_payload_json IS ${expected.runtimePayload}
+        RETURNING thread_id AS "threadId"
+      `,
+  });
+
   const listRuntimeRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProviderSessionRuntimeRawDbRowSchema,
@@ -242,6 +285,18 @@ export const make = Effect.gen(function* () {
           "ProviderSessionRuntimeRepository.upsert:query",
           "ProviderSessionRuntimeRepository.upsert:encodeRequest",
           { threadId: runtime.threadId },
+        ),
+      ),
+    );
+
+  const compareAndSet: ProviderSessionRuntimeRepository["Service"]["compareAndSet"] = (input) =>
+    compareAndSetRuntimeRow(input).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.compareAndSet:query",
+          "ProviderSessionRuntimeRepository.compareAndSet:encodeRequest",
+          { threadId: input.expected.threadId },
         ),
       ),
     );
@@ -324,6 +379,7 @@ export const make = Effect.gen(function* () {
 
   return {
     upsert,
+    compareAndSet,
     getByThreadId,
     list,
     deleteByThreadId,

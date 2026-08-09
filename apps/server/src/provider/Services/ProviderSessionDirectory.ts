@@ -28,6 +28,8 @@ export interface ProviderRuntimeBinding {
   readonly resumeCursor?: unknown | null;
   readonly runtimePayload?: unknown | null;
   readonly runtimeMode?: RuntimeMode;
+  /** Internal CAS restore override; ordinary upserts always stamp the current time. */
+  readonly lastSeenAt?: string;
 }
 
 export interface ProviderRuntimeBindingWithMetadata extends ProviderRuntimeBinding {
@@ -45,13 +47,27 @@ export interface ProviderSessionDirectoryShape {
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 
+  /**
+   * Replace an observed binding only if no persisted field has changed.
+   */
+  readonly compareAndSet: (input: {
+    readonly expected: ProviderRuntimeBindingWithMetadata;
+    readonly binding: ProviderRuntimeBinding;
+  }) => Effect.Effect<
+    Option.Option<ProviderRuntimeBindingWithMetadata>,
+    ProviderSessionDirectoryWriteError
+  >;
+
   readonly getProvider: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderDriverKind, ProviderSessionDirectoryReadError>;
 
   readonly getBinding: (
     threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<ProviderRuntimeBinding>, ProviderSessionDirectoryReadError>;
+  ) => Effect.Effect<
+    Option.Option<ProviderRuntimeBindingWithMetadata>,
+    ProviderSessionDirectoryReadError
+  >;
 
   readonly listThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,

@@ -142,6 +142,45 @@ function toRuntimePayloadFromSession(
   };
 }
 
+function mergeRuntimePayload(existing: unknown, next: unknown): unknown {
+  if (next === undefined) return existing ?? null;
+  if (
+    existing !== null &&
+    typeof existing === "object" &&
+    !Array.isArray(existing) &&
+    next !== null &&
+    typeof next === "object" &&
+    !Array.isArray(next)
+  ) {
+    return { ...existing, ...next };
+  }
+  return next;
+}
+
+function readCommandCodeV2Cursor(raw: unknown) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const cursor = raw as Record<string, unknown>;
+  return cursor.schemaVersion === 2 &&
+    typeof cursor.sessionId === "string" &&
+    cursor.sessionId.length > 0 &&
+    typeof cursor.totalProcessedTokens === "number" &&
+    Number.isInteger(cursor.totalProcessedTokens) &&
+    cursor.totalProcessedTokens >= 0
+    ? {
+        sessionId: cursor.sessionId,
+        totalProcessedTokens: cursor.totalProcessedTokens,
+      }
+    : undefined;
+}
+
+function runtimePayloadLastEvent(runtimePayload: unknown): unknown {
+  return runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload)
+    ? (runtimePayload as Record<string, unknown>).lastRuntimeEvent
+    : undefined;
+}
+
 function readPersistedModelSelection(
   runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"],
 ): ModelSelection | undefined {
@@ -259,7 +298,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ),
         );
 
-  const upsertSessionBinding = (
+  const sessionBinding = (
     session: ProviderSession,
     threadId: ThreadId,
     extra?: {
@@ -273,7 +312,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "ProviderService.upsertSessionBinding",
         session,
       );
-      yield* directory.upsert({
+      return {
         threadId,
         provider: session.provider,
         providerInstanceId,
@@ -281,17 +320,96 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         status: toRuntimeStatus(session),
         ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
         runtimePayload: toRuntimePayloadFromSession(session, extra),
-      });
+      } satisfies ProviderSessionDirectory.ProviderRuntimeBinding;
     });
+
+  const upsertSessionBinding = (
+    session: ProviderSession,
+    threadId: ThreadId,
+    extra?: {
+      readonly modelSelection?: unknown;
+      readonly lastRuntimeEvent?: string;
+      readonly lastRuntimeEventAt?: string;
+    },
+  ) => sessionBinding(session, threadId, extra).pipe(Effect.flatMap(directory.upsert));
 
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
       readonly provider: ProviderDriverKind;
+      readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
     },
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
     Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
+      Effect.tap((canonicalEvent) =>
+        // Command Code updates its v2 cursor before completion. Other adapters
+        // may publish completion before their session snapshot has settled.
+        source.provider === "commandcode" && canonicalEvent.type === "turn.completed"
+          ? Effect.gen(function* () {
+              const sessions = yield* source.adapter.listSessions();
+              const session = sessions.find(
+                (candidate) => candidate.threadId === canonicalEvent.threadId,
+              );
+              if (session === undefined) return;
+
+              const currentAdapter = yield* registry.getByInstance(source.instanceId);
+              if (currentAdapter !== source.adapter) return;
+
+              const binding = yield* directory.getBinding(canonicalEvent.threadId);
+              if (
+                Option.isNone(binding) ||
+                binding.value.providerInstanceId !== source.instanceId
+              ) {
+                return;
+              }
+
+              const nextBinding = yield* sessionBinding(
+                { ...session, providerInstanceId: source.instanceId },
+                canonicalEvent.threadId,
+                {
+                  lastRuntimeEvent: canonicalEvent.type,
+                  lastRuntimeEventAt: canonicalEvent.createdAt,
+                },
+              );
+              const updated = yield* directory.compareAndSet({
+                expected: binding.value,
+                binding: {
+                  ...nextBinding,
+                  runtimePayload: mergeRuntimePayload(
+                    binding.value.runtimePayload,
+                    nextBinding.runtimePayload,
+                  ),
+                },
+              });
+              if (Option.isNone(updated)) return;
+
+              const currentAfterWrite = yield* registry
+                .getByInstance(source.instanceId)
+                .pipe(Effect.option);
+              if (Option.isSome(currentAfterWrite) && currentAfterWrite.value === source.adapter) {
+                return;
+              }
+
+              // A rebuild won after the first identity check. Restore only
+              // if no newer binding write has replaced our CAS result.
+              yield* directory.compareAndSet({
+                expected: updated.value,
+                binding: binding.value,
+              });
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to persist Command Code session after completion", {
+                  errorTag: causeErrorTag(cause),
+                  provider: source.provider,
+                  providerInstanceId: source.instanceId,
+                  threadId: canonicalEvent.threadId,
+                  eventType: canonicalEvent.type,
+                }),
+              ),
+            )
+          : Effect.void,
+      ),
       Effect.flatMap((canonicalEvent) =>
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
@@ -339,6 +457,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             {
               instanceId: id,
               provider: adapter.provider,
+              adapter,
             },
             event,
           ),
@@ -733,7 +852,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // browser tool calls used to lose the toolkit outright.
       yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
       const turn = yield* routed.adapter.sendTurn(input);
-      yield* directory.upsert({
+      const turnBinding = {
         threadId: input.threadId,
         provider: routed.adapter.provider,
         providerInstanceId: routed.instanceId,
@@ -745,7 +864,54 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           lastRuntimeEvent: "provider.sendTurn",
           lastRuntimeEventAt: yield* nowIso,
         },
-      });
+      } satisfies ProviderSessionDirectory.ProviderRuntimeBinding;
+      if (routed.adapter.provider !== "commandcode" || turn.resumeCursor === undefined) {
+        yield* directory.upsert(turnBinding);
+      } else {
+        const currentAdapter = yield* registry.getByInstance(routed.instanceId);
+        const binding = yield* directory.getBinding(input.threadId);
+        if (
+          currentAdapter === routed.adapter &&
+          Option.isSome(binding) &&
+          binding.value.provider === routed.adapter.provider &&
+          binding.value.providerInstanceId === routed.instanceId
+        ) {
+          const existingCursor = readCommandCodeV2Cursor(binding.value.resumeCursor);
+          const earlyCursor = readCommandCodeV2Cursor(turn.resumeCursor);
+          const sameSession =
+            existingCursor !== undefined &&
+            earlyCursor !== undefined &&
+            existingCursor.sessionId === earlyCursor.sessionId;
+          const completionAlreadyPersisted =
+            sameSession &&
+            (existingCursor.totalProcessedTokens > earlyCursor.totalProcessedTokens ||
+              (existingCursor.totalProcessedTokens === earlyCursor.totalProcessedTokens &&
+                runtimePayloadLastEvent(binding.value.runtimePayload) === "turn.completed"));
+          if (!completionAlreadyPersisted) {
+            const updated = yield* directory.compareAndSet({
+              expected: binding.value,
+              binding: {
+                ...turnBinding,
+                runtimePayload: mergeRuntimePayload(
+                  binding.value.runtimePayload,
+                  turnBinding.runtimePayload,
+                ),
+              },
+            });
+            if (Option.isSome(updated)) {
+              const currentAfterWrite = yield* registry
+                .getByInstance(routed.instanceId)
+                .pipe(Effect.option);
+              if (Option.isNone(currentAfterWrite) || currentAfterWrite.value !== routed.adapter) {
+                yield* directory.compareAndSet({
+                  expected: updated.value,
+                  binding: binding.value,
+                });
+              }
+            }
+          }
+        }
+      }
       yield* analytics.record("provider.turn.sent", {
         provider: routed.adapter.provider,
         model: input.modelSelection?.model,

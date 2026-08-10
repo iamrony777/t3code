@@ -134,6 +134,7 @@ const makeCommandCodeConfig = (overrides: Partial<CommandCodeSettings>): Command
   enabled: false,
   binaryPath: "command-code",
   customModels: [],
+  launchArgs: "",
   ...overrides,
 });
 

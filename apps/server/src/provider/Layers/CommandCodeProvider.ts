@@ -21,6 +21,7 @@ import {
   commandCodeGlobalOptionsFromSettings,
   parseCommandCodeGlobalSettings,
 } from "../commandCodeGlobalOptions.ts";
+import { discoverCommandCodeSkills } from "../Drivers/CommandCodeSkills.ts";
 import {
   type CommandCodeModel,
   parseCommandCodeModels,
@@ -238,6 +239,7 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
     settings: CommandCodeSettings,
     instanceId: ProviderInstanceId,
     environment: NodeJS.ProcessEnv = process.env,
+    cwd?: string,
   ): Effect.fn.Return<
     CommandCodeProviderProbeResult,
     never,
@@ -357,6 +359,7 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       }),
     );
     const modelDiscoveryFailed = cliModels.length === 0;
+    const skills = yield* discoverCommandCodeSkills(cwd);
 
     const snapshot = buildServerProvider({
       driver: PROVIDER,
@@ -364,6 +367,7 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       enabled: true,
       checkedAt,
       models: modelsFromSettings(settings, modelDiscoveryFailed ? FALLBACK_MODELS : discovered),
+      skills,
       probe: {
         installed: true,
         version: status.version,
@@ -405,6 +409,7 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
   function* (
     settings: CommandCodeSettings,
     environment: NodeJS.ProcessEnv = process.env,
+    cwd?: string,
   ): Effect.fn.Return<
     ServerProviderDraft,
     never,
@@ -414,6 +419,7 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
       settings,
       ProviderInstanceId.make("commandcode"),
       environment,
+      cwd,
     )).snapshot;
   },
 );

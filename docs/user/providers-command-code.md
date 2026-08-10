@@ -92,25 +92,31 @@ bridge is supported.
 
 ## Current support
 
-Command Code supports normal text turns, streamed reasoning and responses, tool and subagent
-activity, cancellation, explicit session resume, model selection, and T3 Code's generated thread
-titles, branch names, commit messages, and pull request text.
+Command Code supports normal text turns, streamed responses, tool and subagent activity,
+cancellation, explicit session resume, model selection, and T3 Code's generated thread titles,
+branch names, commit messages, and pull request text. Responses stream in as they arrive, so
+Command Code's prose appears between the tool rows it sits between rather than all at once at the
+end of the turn.
 
-Command Code's chain-of-thought appears in the chat as expandable **Thinking** rows before the
-response, just as it does for the other reasoning providers.
+### Sending a message while a turn is running
+
+Command Code cannot take a new instruction into a turn that is already running. Sending one anyway
+is fine: T3 Code holds the message and runs it as its own turn as soon as the current one finishes,
+in the order you sent them. To change course immediately, stop the turn first.
 
 ## Usage reporting
 
 Command Code usage (tokens and cost) is reported on the **Usage** page. T3 Code scans Command
-Code's own session transcripts under `~/.commandcode/projects`, so usage covers turns run outside
-T3 Code too. Cost is taken from the cost Command Code reports per message; when a model has no
+Code's own session transcripts, one set per configured Command Code environment, so usage covers
+turns run outside T3 Code too. Cost is taken from the cost Command Code reports per message; when a model has no
 reported cost, T3 Code prices it against the same rate table it uses for the other providers.
 
 The Early Access adapter runs Command Code in headless JSON mode. It does not currently include:
 
 - image or file attachments;
 - interactive approval or question callbacks;
-- steering an active turn;
+- steering an active turn (messages sent mid-turn are queued instead);
+- Command Code's chain-of-thought in the chat;
 - manual `/compact` or `/compact-mode` UI emulation;
 - Shift+Tab mode emulation;
 - arbitrary provider launch arguments;

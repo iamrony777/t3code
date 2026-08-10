@@ -1097,10 +1097,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       const query = composerTrigger.query.trim().toLowerCase();
       const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
-      if (!query) {
-        return slashCommandItems;
-      }
-      return searchSlashCommandItems(slashCommandItems, query);
+      const filteredSlashCommandItems = query
+        ? searchSlashCommandItems(slashCommandItems, query)
+        : slashCommandItems;
+      const skillItems = searchProviderSkills(
+        selectedProviderStatus?.skills ?? [],
+        composerTrigger.query,
+      ).map((skill) => ({
+        id: `slash-skill:${selectedProvider}:${skill.name}`,
+        type: "skill" as const,
+        provider: selectedProvider,
+        skill,
+        label: formatProviderSkillDisplayName(skill),
+        description:
+          skill.shortDescription ??
+          skill.description ??
+          (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+      }));
+      return [...filteredSlashCommandItems, ...skillItems];
     }
     if (composerTrigger.kind === "skill") {
       return searchProviderSkills(selectedProviderStatus?.skills ?? [], composerTrigger.query).map(

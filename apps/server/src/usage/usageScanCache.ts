@@ -22,7 +22,9 @@ import type { UsageRecord } from "./usageTranscripts.ts";
 /** Derived from the contract so adding or removing a provider cannot drift. */
 const isUsageProviderKind = Schema.is(UsageProviderKind);
 
-export const USAGE_SCAN_CACHE_VERSION = 1 as const;
+// v2: Codex fork-copy suppression changed what a file parses to, so v1
+// entries would keep serving double-counted records forever.
+export const USAGE_SCAN_CACHE_VERSION = 2 as const;
 
 export interface CachedFile {
   readonly size: number;

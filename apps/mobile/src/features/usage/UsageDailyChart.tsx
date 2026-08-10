@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { View } from "react-native";
 
+import type { UsageProviderKind } from "@t3tools/contracts";
 import type { DailyTotals } from "@t3tools/shared/usageMerge";
 
 import { buildChartDays, type UsageChartMetric } from "./usageChartData";
@@ -10,6 +11,8 @@ export interface UsageDailyChartProps {
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
   readonly metric: UsageChartMetric;
+  /** Bands to stack, bottom first. See `visibleProviders`. */
+  readonly providers: readonly UsageProviderKind[];
   readonly height: number;
 }
 
@@ -17,9 +20,12 @@ export interface UsageDailyChartProps {
  * Stacked daily bars drawn with plain views. Android and any platform without
  * Swift Charts land here; iOS resolves `UsageDailyChart.ios.tsx` instead.
  */
-export function UsageDailyChart({ days, daily, metric, height }: UsageDailyChartProps) {
+export function UsageDailyChart({ days, daily, metric, providers, height }: UsageDailyChartProps) {
   const colors = useProviderColors();
-  const chartDays = useMemo(() => buildChartDays(days, daily, metric), [days, daily, metric]);
+  const chartDays = useMemo(
+    () => buildChartDays(days, daily, metric, providers),
+    [days, daily, metric, providers],
+  );
   const max = chartDays.reduce((peak, day) => Math.max(peak, day.total), 0);
 
   return (

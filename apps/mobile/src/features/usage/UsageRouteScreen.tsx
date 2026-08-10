@@ -20,7 +20,7 @@ import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
 import type { UsageChartMetric } from "./usageChartData";
-import { PROVIDER_LABEL, useProviderColors } from "./usageProviders";
+import { PROVIDER_LABEL, useProviderColors, visibleProviders } from "./usageProviders";
 
 const WINDOW_OPTIONS = [
   { days: 7, label: "7 days" },
@@ -150,6 +150,9 @@ function ChartCard(props: {
   const { merged, metric } = props;
   const colors = useProviderColors();
   const hasActivity = merged.daily.some((day) => day.totalTokens > 0);
+  // Bands and legend follow the data, so a provider the user never runs does
+  // not stack a permanently-zero band on every bar.
+  const providers = useMemo(() => visibleProviders(merged.providers), [merged.providers]);
 
   return (
     <View className="gap-4 rounded-[24px] border-continuous bg-card p-4">
@@ -175,6 +178,7 @@ function ChartCard(props: {
           days={props.days}
           daily={merged.daily}
           metric={metric}
+          providers={providers}
           height={CHART_HEIGHT}
         />
       ) : (
@@ -186,15 +190,11 @@ function ChartCard(props: {
       <View className="flex-row items-center justify-between">
         <Text className="text-xs text-foreground-tertiary">{formatDayShort(props.sinceDay)}</Text>
         <View className="flex-row items-center gap-4">
-          {merged.providers.map((provider) => (
-            <View key={provider.provider} className="flex-row items-center gap-1.5">
-              <View
-                className="size-2 rounded-full"
-                style={{ backgroundColor: colors[provider.provider] }}
-              />
-              <Text className="text-xs text-foreground-muted">
-                {PROVIDER_LABEL[provider.provider]}
-              </Text>
+          {/* No chart, no legend: the fallback order would key nothing. */}
+          {(hasActivity ? providers : []).map((provider) => (
+            <View key={provider} className="flex-row items-center gap-1.5">
+              <View className="size-2 rounded-full" style={{ backgroundColor: colors[provider] }} />
+              <Text className="text-xs text-foreground-muted">{PROVIDER_LABEL[provider]}</Text>
             </View>
           ))}
         </View>

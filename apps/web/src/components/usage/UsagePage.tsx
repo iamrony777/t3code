@@ -16,7 +16,13 @@ import {
 } from "@t3tools/shared/usageFormat";
 import { ScrollArea } from "../ui/scroll-area";
 import { UsageChartLegend, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
-import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_MARK, PROVIDER_ORDER } from "./usageProviders";
+import {
+  PROVIDER_COLOR,
+  PROVIDER_LABEL,
+  PROVIDER_MARK,
+  PROVIDER_ORDER,
+  visibleProviders,
+} from "./usageProviders";
 
 const WINDOW_OPTIONS = [
   { days: 7, label: "7 days" },
@@ -56,6 +62,10 @@ export function UsagePage() {
       ),
     [merged.providers, metric],
   );
+
+  // Chart bands, legend and day columns all follow the data, so a provider the
+  // user never runs does not hold a permanently-zero slot across the page.
+  const providers = useMemo(() => visibleProviders(merged.providers), [merged.providers]);
 
   const activeDays = merged.daily.filter((day) => day.totalTokens > 0).length;
   const dailyAverage = activeDays === 0 ? 0 : merged.totalTokens / activeDays;
@@ -208,10 +218,15 @@ export function UsagePage() {
                         </button>
                       ))}
                     </div>
-                    <UsageChartLegend />
+                    <UsageChartLegend providers={providers} />
                   </div>
                 </div>
-                <UsageProviderChart days={days} daily={merged.daily} metric={metric} />
+                <UsageProviderChart
+                  days={days}
+                  daily={merged.daily}
+                  metric={metric}
+                  providers={providers}
+                />
               </div>
             </section>
 
@@ -317,7 +332,7 @@ export function UsagePage() {
                   <thead>
                     <tr className="border-b border-border text-left text-xs text-muted-foreground">
                       <th className="py-2 font-normal">Day</th>
-                      {PROVIDER_ORDER.map((provider) => (
+                      {providers.map((provider) => (
                         <th key={provider} className="py-2 text-right font-normal">
                           {PROVIDER_LABEL[provider]}
                         </th>
@@ -330,7 +345,7 @@ export function UsagePage() {
                     {recentDays.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={PROVIDER_ORDER.length + 2}
+                          colSpan={providers.length + 2}
                           className="py-6 text-center text-muted-foreground"
                         >
                           No activity in this window.
@@ -340,7 +355,7 @@ export function UsagePage() {
                       recentDays.map((day) => (
                         <tr key={day.day} className="border-b border-border/50">
                           <td className="py-2 text-foreground">{formatDayShort(day.day)}</td>
-                          {PROVIDER_ORDER.map((provider) => (
+                          {providers.map((provider) => (
                             <td
                               key={provider}
                               className="py-2 text-right text-muted-foreground tabular-nums"

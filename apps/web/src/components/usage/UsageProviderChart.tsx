@@ -3,7 +3,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import type { DailyTotals } from "@t3tools/shared/usageMerge";
 import { formatDayShort, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
-import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_MARK, PROVIDER_ORDER } from "./usageProviders";
+import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_MARK } from "./usageProviders";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 260;
@@ -16,6 +16,8 @@ interface UsageProviderChartProps {
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
   readonly metric: UsageChartMetric;
+  /** Series to draw, in reading order. See `visibleProviders`. */
+  readonly providers: readonly UsageProviderKind[];
 }
 
 /** One day's per-provider values, shared by the paths and the hover readout. */
@@ -166,10 +168,11 @@ export function buildDayColumns(
   days: readonly string[],
   byDay: ReadonlyMap<string, DailyTotals>,
   metric: UsageChartMetric,
+  providers: readonly UsageProviderKind[],
 ): readonly DayColumn[] {
   return days.map((day) => {
     const entry = byDay.get(day);
-    const bands = PROVIDER_ORDER.map((provider) => ({
+    const bands = providers.map((provider) => ({
       provider,
       value: valueFor(entry, provider, metric),
     }));
@@ -177,7 +180,7 @@ export function buildDayColumns(
   });
 }
 
-export function UsageProviderChart({ days, daily, metric }: UsageProviderChartProps) {
+export function UsageProviderChart({ days, daily, metric, providers }: UsageProviderChartProps) {
   const byDay = useMemo(() => new Map(daily.map((entry) => [entry.day, entry])), [daily]);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const plotRef = useRef<HTMLDivElement | null>(null);
@@ -193,7 +196,7 @@ export function UsageProviderChart({ days, daily, metric }: UsageProviderChartPr
       };
     }
 
-    const columns = buildDayColumns(days, byDay, metric);
+    const columns = buildDayColumns(days, byDay, metric, providers);
 
     // The scale tops out at the largest single provider-day, not the largest
     // sum: layered series each measure from zero, so a combined peak would
@@ -209,7 +212,7 @@ export function UsageProviderChart({ days, daily, metric }: UsageProviderChartPr
     const toY = (value: number) =>
       max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP);
 
-    const built = PROVIDER_ORDER.map((provider, providerIndex) => {
+    const built = providers.map((provider, providerIndex) => {
       const curve = smoothCurve(
         columns.map((column, dayIndex) => ({
           x: dayIndex * step,
@@ -231,7 +234,7 @@ export function UsageProviderChart({ days, daily, metric }: UsageProviderChartPr
     const ordered = [...built].sort((a, b) => b.total - a.total);
 
     return { paths: ordered, ticks: tickValues, stepX: step, toY, series: columns };
-  }, [byDay, days, metric]);
+  }, [byDay, days, metric, providers]);
 
   const format = metric === "tokens" ? formatTokens : formatUsd;
 
@@ -334,7 +337,7 @@ export function UsageProviderChart({ days, daily, metric }: UsageProviderChartPr
               }}
             >
               <div className="mb-1 text-muted-foreground">{formatDayShort(hoveredDay)}</div>
-              {PROVIDER_ORDER.map((provider) => {
+              {providers.map((provider) => {
                 const Mark = PROVIDER_MARK[provider];
                 return (
                   <div key={provider} className="flex items-center justify-between gap-3">
@@ -376,10 +379,14 @@ export function UsageProviderChart({ days, daily, metric }: UsageProviderChartPr
   );
 }
 
-export function UsageChartLegend() {
+export function UsageChartLegend({
+  providers,
+}: {
+  readonly providers: readonly UsageProviderKind[];
+}) {
   return (
     <div className="flex items-center gap-4">
-      {PROVIDER_ORDER.map((provider) => {
+      {providers.map((provider) => {
         // The marks carry the same fills as the bands, so they key the chart
         // just as a colour swatch would.
         const Mark = PROVIDER_MARK[provider];

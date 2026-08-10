@@ -41,6 +41,7 @@ import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
+  type ProviderGlobalOptionMutation,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
@@ -392,6 +393,21 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         ),
       );
 
+      // The controller only reports success once it has read the new value back
+      // out of `~/.commandcode/config.json`, and global options are the only
+      // part of the snapshot that file feeds. So re-reading the file and
+      // patching the live snapshot is exactly as truthful as a full probe, at
+      // one file read instead of two CLI round-trips.
+      const setGlobalOption = Effect.fn("CommandCodeDriver.setGlobalOption")(function* (
+        mutation: ProviderGlobalOptionMutation,
+      ) {
+        yield* globalOptionsController.setGlobalOption(mutation);
+        const globalOptions = yield* readGlobalOptions;
+        return yield* snapshot.updateSnapshot((current) =>
+          attachCommandCodeGlobalOptions(current, globalOptions),
+        );
+      });
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -402,7 +418,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         snapshot,
         adapter,
         textGeneration,
-        setGlobalOption: globalOptionsController.setGlobalOption,
+        setGlobalOption,
       } satisfies ProviderInstance;
     }),
 };

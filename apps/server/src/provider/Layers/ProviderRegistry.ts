@@ -496,6 +496,23 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* refreshOneSource(providerSource);
     });
 
+    // `refreshOneSource` without the probe: the caller supplies the snapshot.
+    // Correlation still runs, so a mis-addressed snapshot is a defect here
+    // rather than a silently mis-keyed entry in `providersRef`.
+    const applyInstanceSnapshot = Effect.fn("applyInstanceSnapshot")(function* (
+      instanceId: ProviderInstanceId,
+      snapshot: ServerProvider,
+    ) {
+      const sources = yield* getLiveSources;
+      const providerSource = sources.find((candidate) => candidate.instanceId === instanceId);
+      if (!providerSource) {
+        return yield* Ref.get(providersRef);
+      }
+      return yield* correlateSnapshotWithSource(providerSource, snapshot).pipe(
+        Effect.flatMap(syncProvider),
+      );
+    });
+
     const getProviderMaintenanceCapabilitiesForInstance = Effect.fn(
       "getProviderMaintenanceCapabilitiesForInstance",
     )(function* (instanceId: ProviderInstanceId, provider: ProviderDriverKind) {
@@ -710,6 +727,7 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      applyInstanceSnapshot,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

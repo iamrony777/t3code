@@ -25,6 +25,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ServerProvider,
   ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -85,9 +86,16 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  /**
+   * Apply a provider-wide option mutation (a setting owned by the provider
+   * CLI, not by T3 Code). Resolves with this instance's updated snapshot when
+   * the driver could derive it without re-probing — the caller then converges
+   * without spawning anything. Resolve with `undefined` when the driver cannot
+   * cheaply say what changed; the caller falls back to a full refresh.
+   */
   readonly setGlobalOption?: (
     mutation: ProviderGlobalOptionMutation,
-  ) => Effect.Effect<void, ProviderGlobalOptionMutationError>;
+  ) => Effect.Effect<ServerProvider | undefined, ProviderGlobalOptionMutationError>;
 }
 
 export interface ProviderContinuationIdentity {

@@ -1311,6 +1311,131 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      // Guards the global-option mutation path: the RPC hands the registry a
+      // snapshot the driver already produced, so nothing may probe, and the
+      // returned list must already carry the new value. `refresh` dies here —
+      // if this path ever reaches for it again the test fails loudly instead of
+      // silently costing a couple of CLI round-trips per toggle.
+      it.effect("applies a driver-supplied snapshot without refreshing the instance", () =>
+        Effect.gen(function* () {
+          const commandCodeDriver = ProviderDriverKind.make("commandcode");
+          const commandCodeInstanceId = ProviderInstanceId.make("commandcode");
+          const cachedProvider = {
+            instanceId: commandCodeInstanceId,
+            driver: commandCodeDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-04-29T10:00:00.000Z",
+            version: "1.0.0",
+            models: [],
+            globalOptions: [
+              {
+                id: "compactMode",
+                label: "Compact Mode",
+                type: "select",
+                currentValue: "default",
+                options: [
+                  { id: "default", label: "Normal", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+              },
+            ],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const mutatedProvider = {
+            ...cachedProvider,
+            globalOptions: [
+              {
+                id: "compactMode",
+                label: "Compact Mode",
+                type: "select",
+                currentValue: "fast",
+                options: [
+                  { id: "default", label: "Normal", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+              },
+            ],
+          } as const satisfies ServerProvider;
+          const instance = {
+            instanceId: commandCodeInstanceId,
+            driverKind: commandCodeDriver,
+            continuationIdentity: {
+              driverKind: commandCodeDriver,
+              continuationKey: "commandcode:instance:commandcode",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: commandCodeDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(cachedProvider),
+              refresh: Effect.die(new Error("global option mutations must not probe the provider")),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === commandCodeInstanceId ? instance : undefined),
+              useInstance: (instanceId, use) =>
+                use(instanceId === commandCodeInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-apply-snapshot-",
+                }),
+              ),
+              Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+
+            assert.deepStrictEqual(yield* registry.getProviders, [cachedProvider]);
+
+            // The call itself returns the merged list — callers never have to
+            // wait on the instance's change stream to land in `providersRef`.
+            assert.deepStrictEqual(
+              yield* registry.applyInstanceSnapshot(commandCodeInstanceId, mutatedProvider),
+              [mutatedProvider],
+            );
+            assert.deepStrictEqual(yield* registry.getProviders, [mutatedProvider]);
+
+            // Unknown instances resolve with the cached list, like refreshInstance.
+            assert.deepStrictEqual(
+              yield* registry.applyInstanceSnapshot(
+                ProviderInstanceId.make("commandcode_missing"),
+                mutatedProvider,
+              ),
+              [mutatedProvider],
+            );
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
       it.effect("keeps consuming registry changes after one sync fails", () =>
         Effect.gen(function* () {
           const codexDriver = ProviderDriverKind.make("codex");
@@ -1581,6 +1706,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 providers: {
                   codex: { enabled: true, binaryPath: firstMissing },
                   claudeAgent: { enabled: false },
+                  commandcode: { enabled: false },
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
@@ -1834,6 +1960,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "claudeAgent",
                 "codex",
+                "commandcode",
                 "cursor",
                 "grok",
                 "opencode",

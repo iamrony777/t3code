@@ -24,6 +24,27 @@ interface ProviderSnapshotState {
   readonly enrichmentGeneration: number;
 }
 
+/**
+ * What `makeManagedServerProvider` hands back to a driver. It is a
+ * `ServerProviderShape` plus `updateSnapshot`, the seam a driver uses when it
+ * already knows the new state and must not pay for a probe to publish it.
+ *
+ * Only the driver that built the managed provider sees `updateSnapshot`;
+ * `ProviderInstance.snapshot` stays typed as the narrower
+ * `ServerProviderShape`, so nothing downstream can patch a provider's state.
+ */
+export interface ManagedServerProvider extends ServerProviderShape {
+  /**
+   * Apply a locally-derived patch to the current snapshot, publish it on
+   * `streamChanges`, and return what consumers will observe. No provider
+   * process is spawned. A patch that produces an equal snapshot is a no-op
+   * and publishes nothing.
+   */
+  readonly updateSnapshot: (
+    patch: (snapshot: ServerProvider) => ServerProvider,
+  ) => Effect.Effect<ServerProvider>;
+}
+
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
   Settings,
 >(input: {
@@ -41,7 +62,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
 }): Effect.fn.Return<
-  ServerProviderShape,
+  ManagedServerProvider,
   ServerSettingsError,
   Scope.Scope | BackgroundPolicy.BackgroundPolicy | ServerSettingsService
 > {
@@ -82,6 +103,37 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return;
     }
     yield* PubSub.publish(changesPubSub, snapshotToPublish);
+  });
+
+  // Deliberately outside `refreshSemaphore`: a caller that already knows the
+  // new state must never queue behind an in-flight probe. The Ref.modify is
+  // atomic, and the enrichment generation is left alone so a running
+  // enrichment can still publish its own results.
+  const updateSnapshot = Effect.fn("updateSnapshot")(function* (
+    patch: (snapshot: ServerProvider) => ServerProvider,
+  ) {
+    const updated = yield* Ref.modify(
+      snapshotStateRef,
+      (
+        state,
+      ): readonly [
+        { readonly snapshot: ServerProvider; readonly changed: boolean },
+        ProviderSnapshotState,
+      ] => {
+        const nextSnapshot = patch(state.snapshot);
+        if (Equal.equals(state.snapshot, nextSnapshot)) {
+          return [{ snapshot: state.snapshot, changed: false }, state];
+        }
+        return [
+          { snapshot: nextSnapshot, changed: true },
+          { ...state, snapshot: nextSnapshot },
+        ];
+      },
+    );
+    if (updated.changed) {
+      yield* PubSub.publish(changesPubSub, updated.snapshot);
+    }
+    return updated.snapshot;
   });
 
   const restartSnapshotEnrichment = Effect.fn("restartSnapshotEnrichment")(function* (
@@ -222,8 +274,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     maintenanceCapabilities: input.maintenanceCapabilities,
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
+    updateSnapshot,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
-  } satisfies ServerProviderShape;
+  } satisfies ManagedServerProvider;
 });

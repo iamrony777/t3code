@@ -49,6 +49,18 @@ export interface ProviderRegistryShape {
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
+   * Merge a snapshot the instance already produced into the aggregated list,
+   * without probing. Use this when a mutation path knows the new state — the
+   * returned list already contains it, so callers never have to wait on the
+   * instance's change stream to land. Unknown instance ids resolve with the
+   * currently cached list, matching `refreshInstance`.
+   */
+  readonly applyInstanceSnapshot: (
+    instanceId: ProviderInstanceId,
+    snapshot: ServerProvider,
+  ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
    * Resolve the maintenance capabilities owned by one live provider instance.
    * Falls back to manual-only capabilities when the instance is not live.
    */

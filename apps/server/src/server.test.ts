@@ -28,6 +28,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ResolvedKeybindingRule,
+  type ServerProvider,
   ThreadId,
   WS_METHODS,
   WsRpcGroup,
@@ -639,6 +640,7 @@ const buildAppUnderTest = (options?: {
             getProviders: Effect.succeed([]),
             refresh: () => Effect.succeed([]),
             refreshInstance: () => Effect.succeed([]),
+            applyInstanceSnapshot: () => Effect.succeed([]),
             getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
               Effect.succeed(
                 makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
@@ -4473,6 +4475,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         setGlobalOption: (mutation) =>
           Effect.sync(() => {
             targetMutations.push(mutation);
+            // Stands in for a driver that cannot cheaply derive its new
+            // snapshot, so the handler must still fall back to a refresh.
+            return undefined;
           }),
       } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
       const otherInstance = {
@@ -4480,6 +4485,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         setGlobalOption: (mutation) =>
           Effect.sync(() => {
             otherMutations.push(mutation);
+            return undefined;
           }),
       } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
       const refreshedProvider = {
@@ -4541,6 +4547,78 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(refreshedInstanceIds, [targetId]);
       assert.deepEqual(leaseEvents, ["lease:start", "refresh", "lease:end"]);
       assert.deepEqual(response.providers, [refreshedProvider]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("merges a driver-supplied snapshot instead of re-probing the provider", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("commandcode");
+      const mutatedProvider = {
+        instanceId,
+        driver: ProviderDriverKind.make("commandcode"),
+        enabled: true,
+        installed: true,
+        version: "1.0.0",
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2026-08-09T00:00:00.000Z",
+        models: [],
+        globalOptions: [
+          {
+            id: "compactMode",
+            label: "Compact Mode",
+            type: "select" as const,
+            currentValue: "fast",
+            options: [
+              { id: "default", label: "Normal", isDefault: true },
+              { id: "fast", label: "Fast" },
+            ],
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      } as const;
+      const refreshedInstanceIds: Array<ProviderInstanceId> = [];
+      const appliedSnapshots: Array<ServerProvider> = [];
+      const instance = {
+        instanceId,
+        setGlobalOption: () => Effect.succeed(mutatedProvider as unknown as ServerProvider),
+      } satisfies Pick<ProviderInstance, "instanceId" | "setGlobalOption">;
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerInstanceRegistry: {
+            useInstance: (_instanceId, use) => use(instance as unknown as ProviderInstance),
+          },
+          providerRegistry: {
+            refreshInstance: (refreshedId) =>
+              Effect.sync(() => {
+                refreshedInstanceIds.push(refreshedId);
+                return [];
+              }),
+            applyInstanceSnapshot: (_appliedId, snapshot) =>
+              Effect.sync(() => {
+                appliedSnapshots.push(snapshot);
+                return [snapshot];
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverSetProviderGlobalOption]({
+            instanceId,
+            optionId: "compactMode",
+            value: "fast",
+          }),
+        ),
+      );
+
+      assert.deepEqual(refreshedInstanceIds, []);
+      assert.deepEqual(appliedSnapshots, [mutatedProvider]);
+      assert.deepEqual(response.providers, [mutatedProvider]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

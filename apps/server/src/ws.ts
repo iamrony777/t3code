@@ -1468,7 +1468,7 @@ const makeWsRpcLayer = (
                   });
                 }
 
-                yield* instance
+                const updatedSnapshot = yield* instance
                   .setGlobalOption({
                     optionId: input.optionId,
                     value: input.value,
@@ -1484,7 +1484,18 @@ const makeWsRpcLayer = (
                     ),
                   );
 
-                const providers = yield* providerRegistry.refreshInstance(input.instanceId);
+                // A driver that told us the new snapshot already applied it to
+                // its own state, so merging it is enough — re-probing here
+                // would spend a couple of CLI round-trips confirming a value we
+                // just read off disk. Drivers that cannot say what changed
+                // still get the full refresh.
+                const providers =
+                  updatedSnapshot === undefined
+                    ? yield* providerRegistry.refreshInstance(input.instanceId)
+                    : yield* providerRegistry.applyInstanceSnapshot(
+                        input.instanceId,
+                        updatedSnapshot,
+                      );
                 return { providers };
               }),
             ),

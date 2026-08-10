@@ -8,12 +8,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
-  ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import {
   detectComposerTrigger,
   replaceTextRange,
@@ -72,9 +67,8 @@ import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
+import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
-import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
 
 const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
@@ -284,9 +278,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     editorRef: inputRef,
     isEditorFocused: isFocused,
   });
-  const setProviderGlobalOption = useAtomCommand(serverEnvironment.setProviderGlobalOption, {
-    reportFailure: false,
-  });
+  const handleSetProviderGlobalOption = useSetProviderGlobalOption(props.environmentId);
   const wasExpandedBeforePreviewRef = useRef(false);
   const inFlightThreadIdsRef = useRef(new Set<string>());
   const { onExpandedChange } = props;
@@ -354,28 +346,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
-  const handleSetProviderGlobalOption = useCallback(
-    async (input: ServerProviderGlobalOptionSetInput) => {
-      const result = await setProviderGlobalOption({ environmentId: props.environmentId, input });
-      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) {
-        return;
-      }
-      const error = squashAtomCommandFailure(result);
-      if (error instanceof Error) {
-        throw error;
-      }
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof error.message === "string"
-      ) {
-        throw new Error(error.message);
-      }
-      throw new Error("Could not update the provider setting.");
-    },
-    [props.environmentId, setProviderGlobalOption],
-  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({

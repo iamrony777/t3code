@@ -9,6 +9,11 @@ import type {
   ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
 import {
+  runTrackedProviderGlobalOptionMutation,
+  selectPendingProviderGlobalOptionIds,
+  type ProviderGlobalOptionPendingCounts,
+} from "@t3tools/client-runtime/state/provider-global-options";
+import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -41,8 +46,6 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import {
   buildThreadSettingsOptionSections,
   pendingModelAfterPress,
-  runTrackedProviderGlobalOptionMutation,
-  selectPendingProviderGlobalOptionIds,
 } from "./thread-settings-sheet-state";
 import type { ThreadSettingsSheetCloseReason } from "./use-thread-settings-sheet-presentation";
 
@@ -336,9 +339,8 @@ export function ThreadSettingsSheet(props: {
   const [expandedProviders, setExpandedProviders] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingModel, setPendingModel] = useState<ModelOption | null>(null);
   const [submenu, setSubmenu] = useState<SubmenuPage | null>(null);
-  const [pendingGlobalOptionCounts, setPendingGlobalOptionCounts] = useState<
-    ReadonlyMap<string, number>
-  >(() => new Map());
+  const [pendingGlobalOptionCounts, setPendingGlobalOptionCounts] =
+    useState<ProviderGlobalOptionPendingCounts>(() => new Map());
   const wasPresentedRef = useRef(false);
   const notifyDismissed = useCallback(() => {
     if (!wasPresentedRef.current) {

@@ -7,11 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import {
-  EnvironmentId,
-  type ProviderGlobalOption,
-  type ServerProviderGlobalOptionSetInput,
-} from "@t3tools/contracts";
+import { EnvironmentId, type ProviderGlobalOption } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -30,6 +26,7 @@ import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ComposerSurface } from "./ThreadComposer";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
+import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -44,8 +41,6 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { resolveSelectableModelSelection } from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
@@ -100,9 +95,9 @@ export function NewTaskDraftScreen(props: {
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
   );
-  const setProviderGlobalOption = useAtomCommand(serverEnvironment.setProviderGlobalOption, {
-    reportFailure: false,
-  });
+  const handleSetProviderGlobalOption = useSetProviderGlobalOption(
+    selectedProject?.environmentId ?? null,
+  );
   const environmentConnected =
     selectedProject !== null &&
     connectedEnvironments.find(
@@ -582,32 +577,6 @@ export function NewTaskDraftScreen(props: {
         (provider) => provider.instanceId === flow.selectedModel?.instanceId,
       ) ?? null,
     [selectedEnvironmentServerConfig, flow.selectedModel?.instanceId],
-  );
-  const handleSetProviderGlobalOption = useCallback(
-    async (input: ServerProviderGlobalOptionSetInput) => {
-      const environmentId = selectedProject?.environmentId;
-      if (!environmentId) {
-        throw new Error("No environment is selected.");
-      }
-      const result = await setProviderGlobalOption({ environmentId, input });
-      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) {
-        return;
-      }
-      const error = squashAtomCommandFailure(result);
-      if (error instanceof Error) {
-        throw error;
-      }
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof error.message === "string"
-      ) {
-        throw new Error(error.message);
-      }
-      throw new Error("Could not update the provider setting.");
-    },
-    [selectedProject?.environmentId, setProviderGlobalOption],
   );
 
   const workspaceMenuActions = useMemo(() => {

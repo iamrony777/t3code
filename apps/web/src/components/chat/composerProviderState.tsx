@@ -21,7 +21,6 @@ import { getProviderModelCapabilities } from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
 const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
-const EMPTY_PENDING_PROVIDER_GLOBAL_OPTION_IDS: ReadonlySet<string> = new Set();
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -63,79 +62,6 @@ export function buildProviderGlobalOptionMutationTarget(
   input: ServerProviderGlobalOptionSetInput,
 ) {
   return { environmentId, input };
-}
-
-export function buildProviderGlobalOptionPendingKey(
-  environmentId: EnvironmentId,
-  instanceId: ProviderInstanceId,
-  optionId: string,
-): string {
-  return JSON.stringify([environmentId, instanceId, optionId]);
-}
-
-export function updateProviderGlobalOptionPendingCounts(
-  current: ReadonlyMap<string, number>,
-  key: string,
-  delta: 1 | -1,
-): ReadonlyMap<string, number> {
-  const currentCount = current.get(key) ?? 0;
-  if (delta === -1 && currentCount === 0) {
-    return current;
-  }
-  const next = new Map(current);
-  const nextCount = currentCount + delta;
-  if (nextCount > 0) {
-    next.set(key, nextCount);
-  } else {
-    next.delete(key);
-  }
-  return next;
-}
-
-export async function runTrackedProviderGlobalOptionMutation<A>(input: {
-  environmentId: EnvironmentId;
-  mutation: ServerProviderGlobalOptionSetInput;
-  updatePending: (
-    update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>,
-  ) => void;
-  run: () => Promise<A>;
-}): Promise<A> {
-  const key = buildProviderGlobalOptionPendingKey(
-    input.environmentId,
-    input.mutation.instanceId,
-    input.mutation.optionId,
-  );
-  input.updatePending((current) => updateProviderGlobalOptionPendingCounts(current, key, 1));
-  try {
-    return await input.run();
-  } finally {
-    input.updatePending((current) => updateProviderGlobalOptionPendingCounts(current, key, -1));
-  }
-}
-
-export function selectPendingProviderGlobalOptionIds(
-  pendingCounts: ReadonlyMap<string, number>,
-  environmentId: EnvironmentId,
-  instanceId: ProviderInstanceId,
-): ReadonlySet<string> {
-  const optionIds = new Set<string>();
-  for (const key of pendingCounts.keys()) {
-    try {
-      const tuple: unknown = JSON.parse(key);
-      if (
-        Array.isArray(tuple) &&
-        tuple.length === 3 &&
-        tuple[0] === environmentId &&
-        tuple[1] === instanceId &&
-        typeof tuple[2] === "string"
-      ) {
-        optionIds.add(tuple[2]);
-      }
-    } catch {
-      continue;
-    }
-  }
-  return optionIds.size === 0 ? EMPTY_PENDING_PROVIDER_GLOBAL_OPTION_IDS : optionIds;
 }
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {

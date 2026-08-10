@@ -10,15 +10,11 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
-  buildProviderGlobalOptionPendingKey,
   buildProviderGlobalOptionMutationTarget,
   getComposerPromptInjectionState,
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
-  runTrackedProviderGlobalOptionMutation,
-  selectPendingProviderGlobalOptionIds,
-  updateProviderGlobalOptionPendingCounts,
 } from "./composerProviderState";
 import { DraftId } from "../../composerDraftStore";
 
@@ -308,107 +304,5 @@ describe("provider traits render guards", () => {
         value: true,
       },
     });
-  });
-
-  it("keeps concurrent Compact and Taste mutations pending independently", async () => {
-    let releaseCompact: (() => void) | undefined;
-    let releaseTaste: (() => void) | undefined;
-    const compactGate = new Promise<void>((resolve) => {
-      releaseCompact = resolve;
-    });
-    const tasteGate = new Promise<void>((resolve) => {
-      releaseTaste = resolve;
-    });
-    let pending: ReadonlyMap<string, number> = new Map();
-    const updatePending = (
-      update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>,
-    ) => {
-      pending = update(pending);
-    };
-    const compact = runTrackedProviderGlobalOptionMutation({
-      environmentId: ENVIRONMENT_ID,
-      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "fast" },
-      updatePending,
-      run: () => compactGate,
-    });
-    const taste = runTrackedProviderGlobalOptionMutation({
-      environmentId: ENVIRONMENT_ID,
-      mutation: { instanceId: INSTANCE_ID, optionId: "tasteLearning", value: true },
-      updatePending,
-      run: () => tasteGate,
-    });
-
-    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
-      ["compactMode", "tasteLearning"],
-    );
-
-    releaseCompact?.();
-    await compact;
-    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
-      ["tasteLearning"],
-    );
-
-    releaseTaste?.();
-    await taste;
-    expect(pending.size).toBe(0);
-  });
-
-  it("keeps one option pending until overlapping values settle in reverse order", async () => {
-    let releaseFast: (() => void) | undefined;
-    let releaseNormal: (() => void) | undefined;
-    const fastGate = new Promise<void>((resolve) => {
-      releaseFast = resolve;
-    });
-    const normalGate = new Promise<void>((resolve) => {
-      releaseNormal = resolve;
-    });
-    let pending: ReadonlyMap<string, number> = new Map();
-    const updatePending = (
-      update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>,
-    ) => {
-      pending = update(pending);
-    };
-    const fast = runTrackedProviderGlobalOptionMutation({
-      environmentId: ENVIRONMENT_ID,
-      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "fast" },
-      updatePending,
-      run: () => fastGate,
-    });
-    const normal = runTrackedProviderGlobalOptionMutation({
-      environmentId: ENVIRONMENT_ID,
-      mutation: { instanceId: INSTANCE_ID, optionId: "compactMode", value: "normal" },
-      updatePending,
-      run: () => normalGate,
-    });
-
-    releaseNormal?.();
-    await normal;
-    expect([...selectPendingProviderGlobalOptionIds(pending, ENVIRONMENT_ID, INSTANCE_ID)]).toEqual(
-      ["compactMode"],
-    );
-
-    releaseFast?.();
-    await fast;
-    expect(pending.size).toBe(0);
-  });
-
-  it("does not inherit pending options when the environment or instance changes", () => {
-    const pending = updateProviderGlobalOptionPendingCounts(
-      new Map(),
-      buildProviderGlobalOptionPendingKey(ENVIRONMENT_ID, INSTANCE_ID, "compactMode"),
-      1,
-    );
-
-    expect(
-      selectPendingProviderGlobalOptionIds(pending, EnvironmentId.make("env-other"), INSTANCE_ID)
-        .size,
-    ).toBe(0);
-    expect(
-      selectPendingProviderGlobalOptionIds(
-        pending,
-        ENVIRONMENT_ID,
-        ProviderInstanceId.make("commandCode-other"),
-      ).size,
-    ).toBe(0);
   });
 });

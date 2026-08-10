@@ -14,7 +14,6 @@ import {
 export const COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS = 10_000;
 export const COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES = 64 * 1024;
 export const COMMAND_CODE_SETTINGS_MAX_BYTES = 1024 * 1024;
-const COMMAND_CODE_SETTINGS_POLL_INTERVAL = "50 millis";
 
 const CompactMode = Schema.Literals(["default", "fast"]);
 type CompactMode = typeof CompactMode.Type;
@@ -198,94 +197,60 @@ export const createCommandCodeGlobalOptionsController = Effect.fn(
       });
     }
 
-    const commandEffect = dependencies
+    // Command Code persists the setting before it continues into its interactive
+    // flow, and `--config` then exits nonzero on a pipe ("Interactive mode
+    // requires a TTY terminal"), so the settings file - not the exit code -
+    // decides whether the mutation took. The timeout is the only bound: it is
+    // also the only thing that ever kills the CLI, and it only reports failure
+    // when the value is missing from disk afterwards.
+    const outcome = yield* dependencies
       .runCommand({
         args: command.args,
         maxStdoutBytes: COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES,
         maxStderrBytes: COMMAND_CODE_GLOBAL_OPTION_OUTPUT_BYTES,
       })
-      .pipe(
-        Effect.map((result) => ({ _tag: "CommandCompleted", result }) as const),
-        Effect.catch((cause) => Effect.succeed({ _tag: "CommandFailed", cause } as const)),
-      );
+      .pipe(Effect.result, Effect.timeoutOption(COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS));
 
-    const waitForExpectedSetting = (): Effect.Effect<{ readonly _tag: "SettingVerified" }, never> =>
-      dependencies.readSettingsFile(settingsFilePath).pipe(
-        Effect.map(parseCommandCodeGlobalSettings),
-        Effect.flatMap((settings) =>
-          settingValue(settings, mutation.optionId) === command.expected
-            ? Effect.succeed({ _tag: "SettingVerified" } as const)
-            : Effect.sleep(COMMAND_CODE_SETTINGS_POLL_INTERVAL).pipe(
-                Effect.andThen(waitForExpectedSetting()),
-              ),
-        ),
-        Effect.catch(() =>
-          Effect.sleep(COMMAND_CODE_SETTINGS_POLL_INTERVAL).pipe(
-            Effect.andThen(waitForExpectedSetting()),
-          ),
-        ),
-      );
+    const document = yield* dependencies.readSettingsFile(settingsFilePath).pipe(Effect.result);
+    if (
+      Result.isSuccess(document) &&
+      settingValue(parseCommandCodeGlobalSettings(document.success), mutation.optionId) ===
+        command.expected
+    ) {
+      return;
+    }
 
-    // `--config` persists the value before Command Code enters its normal
-    // interactive flow, so the verified write is the command's completion.
-    const operation =
-      mutation.optionId === "compactMode"
-        ? Effect.raceFirst(commandEffect, waitForExpectedSetting())
-        : commandEffect;
-    const commandExit = yield* operation.pipe(
-      Effect.timeoutOption(COMMAND_CODE_GLOBAL_OPTION_TIMEOUT_MS),
-    );
-    if (Option.isNone(commandExit)) {
+    if (Option.isNone(outcome)) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Command Code settings command timed out.",
       });
     }
-    const outcome = commandExit.value;
-    if (outcome._tag === "SettingVerified") return;
-    if (outcome._tag === "CommandFailed") {
+    if (Result.isFailure(outcome.value)) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Failed to run the Command Code settings command.",
-        cause: outcome.cause,
+        cause: outcome.value.failure,
       });
     }
-
-    const result = outcome.result;
+    const result = outcome.value.success;
     if (result.stdoutTruncated || result.stderrTruncated) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Command Code settings command produced too much output.",
       });
     }
-    if (mutation.optionId !== "compactMode" && result.exitCode !== 0) {
+    if (result.exitCode !== 0) {
       return yield* new ProviderGlobalOptionMutationError({
         message: `Command Code settings command failed: ${boundedCommandDetail(result)}`,
       });
     }
-
-    const verifiedDocument = yield* dependencies
-      .readSettingsFile(settingsFilePath)
-      .pipe(Effect.result);
-    if (Result.isFailure(verifiedDocument)) {
+    if (Result.isFailure(document)) {
       return yield* new ProviderGlobalOptionMutationError({
         message: "Could not read Command Code settings after the native command completed.",
-        cause: verifiedDocument.failure,
+        cause: document.failure,
       });
     }
-    const verified = parseCommandCodeGlobalSettings(verifiedDocument.success);
-    const actual = settingValue(verified, mutation.optionId);
-    if (
-      mutation.optionId === "compactMode" &&
-      actual !== command.expected &&
-      result.exitCode !== 0
-    ) {
-      return yield* new ProviderGlobalOptionMutationError({
-        message: `Command Code settings command failed: ${boundedCommandDetail(result)}`,
-      });
-    }
-    if (actual !== command.expected) {
-      return yield* new ProviderGlobalOptionMutationError({
-        message: `Command Code did not persist ${mutation.optionId}.`,
-      });
-    }
+    return yield* new ProviderGlobalOptionMutationError({
+      message: `Command Code did not persist ${mutation.optionId}.`,
+    });
   });
 
   return {

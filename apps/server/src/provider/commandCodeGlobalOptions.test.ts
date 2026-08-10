@@ -180,11 +180,49 @@ describe("Command Code global options controller", () => {
     }),
   );
 
-  it.effect("fails on native command errors and read-after-write mismatches", () =>
+  it.effect("accepts a nonzero exit when the native command already persisted the value", () =>
+    Effect.gen(function* () {
+      const document = yield* Ref.make(encodeJson({ compactMode: "default", tasteLearning: true }));
+      const controller = yield* createCommandCodeGlobalOptionsController({
+        settingsFilePath: "/home/test/.commandcode/config.json",
+        readSettingsFile: () => Ref.get(document),
+        // Command Code writes the setting, then fails on its way into the
+        // interactive flow because stdio is piped rather than a TTY.
+        runCommand: (input) =>
+          Effect.gen(function* () {
+            const current = parseCommandCodeGlobalSettings(yield* Ref.get(document));
+            yield* Ref.set(
+              document,
+              encodeJson(
+                input.args[0] === "--config"
+                  ? { ...current, compactMode: input.args[1]?.split("=")[1] }
+                  : { ...current, tasteLearning: input.args[1] === "enable" },
+              ),
+            );
+            return {
+              ...successfulCommand,
+              exitCode: 1,
+              stderr: "Error: Interactive mode requires a TTY terminal.",
+            };
+          }),
+      });
+
+      yield* controller.setGlobalOption({ optionId: "compactMode", value: "fast" });
+      yield* controller.setGlobalOption({ optionId: "tasteLearning", value: false });
+
+      expect((yield* controller.readOptions).map((option) => option.currentValue)).toEqual([
+        "fast",
+        false,
+      ]);
+    }),
+  );
+
+  it.effect("fails with the command detail when it exits nonzero and the value never lands", () =>
     Effect.gen(function* () {
       const nonzero = yield* createCommandCodeGlobalOptionsController({
         settingsFilePath: "/home/test/.commandcode/config.json",
-        readSettingsFile: () => Effect.succeed(encodeJson({ compactMode: "default" })),
+        readSettingsFile: () =>
+          Effect.succeed(encodeJson({ compactMode: "default", tasteLearning: true })),
         runCommand: () =>
           Effect.succeed({ ...successfulCommand, exitCode: 1, stderr: "native failure" }),
       });
@@ -194,14 +232,18 @@ describe("Command Code global options controller", () => {
         runCommand: () => Effect.succeed(successfulCommand),
       });
 
-      const commandFailure = yield* nonzero
-        .setGlobalOption({ optionId: "compactMode", value: "fast" })
-        .pipe(Effect.flip);
+      const failures = yield* Effect.all([
+        nonzero.setGlobalOption({ optionId: "compactMode", value: "fast" }).pipe(Effect.flip),
+        nonzero.setGlobalOption({ optionId: "tasteLearning", value: false }).pipe(Effect.flip),
+      ]);
       const mismatchFailure = yield* mismatched
         .setGlobalOption({ optionId: "compactMode", value: "fast" })
         .pipe(Effect.flip);
 
-      expect(commandFailure.message).toContain("native failure");
+      expect(failures.map((failure) => failure.message)).toEqual([
+        "Command Code settings command failed: native failure",
+        "Command Code settings command failed: native failure",
+      ]);
       expect(mismatchFailure.message).toContain("did not persist");
     }),
   );
@@ -258,7 +300,7 @@ describe("Command Code global options controller", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("completes compact mutations after the native config write and reaps the CLI", () =>
+  it.effect("succeeds when the value is on disk even though the CLI never exited", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>();
@@ -269,6 +311,8 @@ describe("Command Code global options controller", () => {
         const controller = yield* createCommandCodeGlobalOptionsController({
           settingsFilePath: "/home/test/.commandcode/config.json",
           readSettingsFile: () => Ref.get(document),
+          // A CLI attached to a TTY writes the setting and then stays in its
+          // interactive flow forever; only the timeout reaps it.
           runCommand: () =>
             Effect.gen(function* () {
               yield* Ref.set(document, encodeJson({ compactMode: "fast", tasteLearning: true }));

@@ -236,6 +236,8 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           "task.completed",
           "item.started",
           "content.delta",
+          "item.completed",
+          "item.started",
           "content.delta",
           "item.completed",
           "item.completed",
@@ -245,11 +247,13 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         expect(
           events.find((event) => event.type === "content.delta" && event.payload.delta === "hello"),
         ).toBeDefined();
-        expect(
-          events.find(
-            (event) => event.type === "item.completed" && event.payload.detail === "hello world",
-          ),
-        ).toBeDefined();
+        const assistantSegments = events.flatMap((event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message"
+            ? [{ itemId: event.itemId, detail: event.payload.detail }]
+            : [],
+        );
+        expect(assistantSegments.map((segment) => segment.detail)).toEqual(["hello", " world"]);
+        expect(new Set(assistantSegments.map((segment) => segment.itemId)).size).toBe(2);
         expect(events.find((event) => event.type === "thread.token-usage.updated")).toMatchObject({
           payload: {
             usage: {
@@ -356,10 +360,6 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           runtimeMode: "approval-required",
         });
         const turn = yield* adapter.sendTurn({ threadId, input: "wait" });
-        const steeringExit = yield* adapter
-          .sendTurn({ threadId, input: "steer" })
-          .pipe(Effect.exit);
-        expect(steeringExit._tag).toBe("Failure");
         yield* adapter.interruptTurn(threadId, turn.turnId);
 
         const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
@@ -525,9 +525,67 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const terminal = yield* Fiber.join(terminalFiber);
         yield* Effect.yieldNow;
-        expect(turnFiber.pollUnsafe()).toBeDefined();
+        const turnExit = yield* Fiber.join(turnFiber);
+        expect(turnExit._tag).toBe("Success");
+        expect(turnExit._tag === "Success" ? turnExit.value.resumeCursor : undefined).toEqual({
+          schemaVersion: 2,
+          sessionId: "session-1",
+          totalProcessedTokens: 0,
+        });
         expect(Option.getOrUndefined(terminal)).toMatchObject({
           payload: { state: "completed" },
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails the turn when the CLI exits 0 without ever reporting a session id", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-exit0-nosid-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            // No run_start and no result frame: nothing ever reports a session id.
+            "exit 0",
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-exit0-nosid");
+        const terminalFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "start" })
+          .pipe(Effect.exit, Effect.forkChild);
+
+        const terminal = yield* Fiber.join(terminalFiber);
+        expect((yield* Fiber.join(turnFiber))._tag).toBe("Failure");
+        expect(Option.getOrUndefined(terminal)).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage: "Command Code exited without reporting a session id.",
+          },
         });
       }),
     ),
@@ -583,7 +641,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
-  it.effect("rejects attachments, steering, approvals, and rollback explicitly", () =>
+  it.effect("rejects attachments, approvals, and rollback explicitly", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
@@ -683,7 +741,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
-  it.effect("admits only one concurrent turn and releases a failed validation claim", () =>
+  it.effect("holds a concurrent send behind an in-flight claim and releases it on failure", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -747,20 +805,232 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
 
         const first = yield* adapter.sendTurn(turnInput).pipe(Effect.exit, Effect.forkChild);
         yield* Deferred.await(validationStarted);
-        const concurrent = yield* adapter.sendTurn(turnInput).pipe(Effect.flip);
-        expect(concurrent).toMatchObject({
-          _tag: "ProviderAdapterValidationError",
-          issue: "Command Code headless mode does not support mid-turn steering.",
-        });
+        const concurrent = yield* adapter.sendTurn(turnInput).pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(concurrent.pollUnsafe()).toBeUndefined();
         expect(validationCalls).toBe(1);
         expect(spawnCalls).toBe(0);
 
         yield* Deferred.succeed(releaseValidation, undefined);
         expect((yield* Fiber.join(first))._tag).toBe("Failure");
-        yield* adapter.sendTurn(turnInput);
+        expect((yield* Fiber.join(concurrent))._tag).toBe("Success");
 
         expect(validationCalls).toBe(2);
         expect(spawnCalls).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("queues a mid-turn send and runs it as its own turn once the first settles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-queue-" });
+        const binaryPath = path.join(dir, "command-code");
+        const stdinLog = path.join(dir, "stdin.log");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "prompt=$(cat)",
+            'printf \'%s\\n\' "$prompt" >> "$COMMAND_CODE_STDIN_LOG"',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-queue"}}\'',
+            'printf \'%s\\n\' \'{"type":"result","subtype":"success","sessionId":"session-queue","usage":{},"durationMs":1,"finalText":"ok"}\'',
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        let spawnCalls = 0;
+        const countingSpawner = ChildProcessSpawner.make((command) => {
+          spawnCalls += 1;
+          return delegate.spawn(command);
+        });
+        // The context-window lookup runs while the first turn is still the
+        // active turn, so holding it there keeps the turn open deterministically.
+        const firstTurnHeld = yield* Deferred.make<void>();
+        const releaseFirstTurn = yield* Deferred.make<void>();
+        let contextWindowCalls = 0;
+        const catalogController: CommandCodeAdapterCatalogController = {
+          supportsReasoningEffort: () => Effect.succeed(true),
+          getModelContextWindow: () =>
+            Effect.gen(function* () {
+              contextWindowCalls += 1;
+              if (contextWindowCalls === 1) {
+                yield* Deferred.succeed(firstTurnHeld, undefined);
+                yield* Deferred.await(releaseFirstTurn);
+              }
+              return undefined;
+            }),
+        };
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController,
+          environment: { ...process.env, COMMAND_CODE_STDIN_LOG: stdinLog },
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, countingSpawner));
+        const threadId = ThreadId.make("thread-command-code-queue");
+        const completionsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+
+        const firstTurn = yield* adapter.sendTurn({ threadId, input: "first" });
+        yield* Deferred.await(firstTurnHeld);
+
+        const queued = yield* adapter
+          .sendTurn({ threadId, input: "second" })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(queued.pollUnsafe()).toBeUndefined();
+        expect(spawnCalls).toBe(1);
+
+        yield* Deferred.succeed(releaseFirstTurn, undefined);
+        const secondTurn = yield* Fiber.join(queued);
+        expect(secondTurn.turnId).not.toBe(firstTurn.turnId);
+
+        const completions = Array.from(yield* Fiber.join(completionsFiber));
+        expect(completions).toHaveLength(2);
+        expect(completions.map((event) => event.turnId)).toEqual([
+          firstTurn.turnId,
+          secondTurn.turnId,
+        ]);
+        expect(spawnCalls).toBe(2);
+        expect((yield* fs.readFileString(stdinLog)).trim().split("\n")).toEqual([
+          "first",
+          "second",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("releases a queued send when the session stops", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-queue-stop-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-queue-stop"}}\'',
+            "trap 'exit 143' TERM",
+            "sleep 3600",
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-queue-stop");
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "first" });
+        const queued = yield* adapter
+          .sendTurn({ threadId, input: "second" })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(queued.pollUnsafe()).toBeUndefined();
+
+        yield* adapter.stopSession(threadId);
+        const queuedExit = yield* Fiber.join(queued);
+        expect(queuedExit._tag).toBe("Failure");
+      }),
+    ),
+  );
+
+  it.effect("opens a new assistant block per message so tool rows interleave with prose", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-interleave-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-interleave"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_start","messageId":"message-1"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"before"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_end","messageId":"message-1"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"tool_queued","toolCallId":"tool-1","toolName":"run_command"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"tool_completed","toolCallId":"tool-1","toolName":"run_command","result":"ok"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_start","messageId":"message-2"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-2","delta":"after"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_end","messageId":"message-2"}}\'',
+            'printf \'%s\\n\' \'{"type":"result","subtype":"success","sessionId":"session-interleave","usage":{},"durationMs":3,"finalText":"before after"}\'',
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-interleave");
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "go" });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const timeline = events.flatMap((event) =>
+          event.type === "item.started" || event.type === "item.completed"
+            ? [`${event.payload.itemType}:${event.type === "item.started" ? "start" : "end"}`]
+            : event.type === "content.delta"
+              ? [`delta:${event.payload.delta}`]
+              : [],
+        );
+        expect(timeline).toEqual([
+          "assistant_message:start",
+          "delta:before",
+          "assistant_message:end",
+          "command_execution:start",
+          "command_execution:end",
+          "assistant_message:start",
+          "delta:after",
+          "assistant_message:end",
+        ]);
+        const assistantSegments = events.flatMap((event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message"
+            ? [{ itemId: event.itemId, detail: event.payload.detail }]
+            : [],
+        );
+        expect(assistantSegments.map((segment) => segment.detail)).toEqual(["before", "after"]);
+        expect(new Set(assistantSegments.map((segment) => segment.itemId)).size).toBe(2);
       }),
     ),
   );

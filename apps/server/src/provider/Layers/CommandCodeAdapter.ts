@@ -28,6 +28,7 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner";
@@ -66,16 +67,23 @@ export interface CommandCodeAdapterCatalogController extends CommandCodeReasonin
   readonly getModelContextWindow: (modelSlug: string) => Effect.Effect<number | undefined>;
 }
 
+/** One assistant prose block. A turn emits one per CLI `message_*` cycle. */
+interface AssistantSegment {
+  readonly itemId: RuntimeItemId;
+  text: string;
+}
+
 interface TurnState {
   readonly turnId: TurnId;
-  readonly assistantItemId: RuntimeItemId;
   readonly reasoningItemId: RuntimeItemId;
-  assistantStarted: boolean;
-  assistantCompleted: boolean;
+  // Assistant text is segmented per CLI message so tool rows interleave
+  // between paragraphs. `assistantSegment` is the currently open block, if any.
+  assistantSegment: AssistantSegment | undefined;
+  assistantSegmentCount: number;
+  assistantTextEmitted: boolean;
   reasoningStarted: boolean;
   reasoningCompleted: boolean;
   reasoningBlockHasDelta: boolean;
-  streamedText: string;
   interrupted: boolean;
   readonly tools: Map<
     string,
@@ -99,7 +107,12 @@ interface CommandCodeSessionContext {
   activeChild: ChildProcessHandle | undefined;
   activeFiber: Fiber.Fiber<void, never> | undefined;
   activeTurn: TurnState | undefined;
-  turnStarting: boolean;
+  // Command Code cannot steer a running turn, so sends queue instead. `sendGate`
+  // makes check-and-claim atomic (and gives FIFO ordering) while `turnSettled`
+  // is completed by the forked turn fiber on every exit path, releasing the
+  // next waiter.
+  readonly sendGate: Semaphore.Semaphore;
+  turnSettled: Deferred.Deferred<void> | undefined;
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   stopped: boolean;
 }
@@ -333,22 +346,53 @@ export function makeCommandCodeAdapter(
       );
     };
 
-    const completeAssistant = (
+    /**
+     * Opens the assistant block for the current CLI message, keyed by the CLI's
+     * own message id when it has one so a block keeps a stable item id.
+     */
+    const openAssistantSegment = (
       ctx: CommandCodeSessionContext,
       turn: TurnState,
       raw?: Readonly<Record<string, unknown>>,
     ) =>
       Effect.gen(function* () {
-        if (!turn.assistantStarted || turn.assistantCompleted) return;
-        turn.assistantCompleted = true;
+        const existing = turn.assistantSegment;
+        if (existing) return existing;
+        const messageId = raw ? eventString(raw, "messageId", "message_id") : undefined;
+        const key = messageId ?? `${turn.assistantSegmentCount}`;
+        turn.assistantSegmentCount += 1;
+        const segment: AssistantSegment = {
+          itemId: RuntimeItemId.make(`${turn.turnId}-assistant-${key}`),
+          text: "",
+        };
+        turn.assistantSegment = segment;
+        yield* publish({
+          type: "item.started",
+          ...(yield* base(ctx, turn.turnId, raw)),
+          itemId: segment.itemId,
+          payload: { itemType: "assistant_message", status: "inProgress" },
+        });
+        return segment;
+      });
+
+    /** Closes the open assistant block, if any. A no-op once it is closed. */
+    const completeAssistantSegment = (
+      ctx: CommandCodeSessionContext,
+      turn: TurnState,
+      raw?: Readonly<Record<string, unknown>>,
+    ) =>
+      Effect.gen(function* () {
+        const segment = turn.assistantSegment;
+        if (!segment) return;
+        turn.assistantSegment = undefined;
         yield* publish({
           type: "item.completed",
           ...(yield* base(ctx, turn.turnId, raw)),
-          itemId: turn.assistantItemId,
+          itemId: segment.itemId,
           payload: {
             itemType: "assistant_message",
             status: "completed",
-            ...(turn.streamedText ? { detail: turn.streamedText } : {}),
+            ...(segment.text ? { detail: segment.text } : {}),
           },
         });
       });
@@ -652,37 +696,26 @@ export function makeCommandCodeAdapter(
             break;
           }
           case "message_start": {
-            if (!turn.assistantStarted) {
-              turn.assistantStarted = true;
-              yield* publish({
-                type: "item.started",
-                ...(yield* base(ctx, turn.turnId, event)),
-                itemId: turn.assistantItemId,
-                payload: { itemType: "assistant_message", status: "inProgress" },
-              });
-            }
+            yield* openAssistantSegment(ctx, turn, event);
             break;
           }
           case "text_delta": {
             const delta = eventString(event, "delta", "text");
-            if (!turn.assistantStarted) {
-              turn.assistantStarted = true;
-              yield* publish({
-                type: "item.started",
-                ...(yield* base(ctx, turn.turnId, event)),
-                itemId: turn.assistantItemId,
-                payload: { itemType: "assistant_message", status: "inProgress" },
-              });
-            }
+            const segment = yield* openAssistantSegment(ctx, turn, event);
             if (delta !== undefined) {
-              turn.streamedText += delta;
+              segment.text += delta;
+              turn.assistantTextEmitted = true;
               yield* publish({
                 type: "content.delta",
                 ...(yield* base(ctx, turn.turnId, event)),
-                itemId: turn.assistantItemId,
+                itemId: segment.itemId,
                 payload: { streamKind: "assistant_text", delta },
               });
             }
+            break;
+          }
+          case "message_end": {
+            yield* completeAssistantSegment(ctx, turn, event);
             break;
           }
         }
@@ -724,26 +757,21 @@ export function makeCommandCodeAdapter(
             }),
           ).pipe(Effect.ignore);
         }
-        if (!turn.streamedText && result.finalText) {
-          if (!turn.assistantStarted) {
-            turn.assistantStarted = true;
-            yield* publish({
-              type: "item.started",
-              ...(yield* base(ctx, turn.turnId)),
-              itemId: turn.assistantItemId,
-              payload: { itemType: "assistant_message", status: "inProgress" },
-            });
-          }
-          turn.streamedText = result.finalText;
+        // `assistantTextEmitted` spans the whole turn, so a multi-segment turn
+        // never replays `finalText` as a duplicate trailing paragraph.
+        if (!turn.assistantTextEmitted && result.finalText) {
+          const segment = yield* openAssistantSegment(ctx, turn);
+          segment.text = result.finalText;
+          turn.assistantTextEmitted = true;
           yield* publish({
             type: "content.delta",
             ...(yield* base(ctx, turn.turnId)),
-            itemId: turn.assistantItemId,
+            itemId: segment.itemId,
             payload: { streamKind: "assistant_text", delta: result.finalText },
           });
         }
         yield* completeReasoning(ctx, turn);
-        yield* completeAssistant(ctx, turn);
+        yield* completeAssistantSegment(ctx, turn);
         const activeUsage =
           resumeSessionId === undefined
             ? undefined
@@ -871,28 +899,36 @@ export function makeCommandCodeAdapter(
           // whose stream closed before the final frame flushed. Exit 0 is the
           // CLI's success signal, so this is a completed turn, not a failure.
           yield* completeReasoning(ctx, turn);
-          yield* completeAssistant(ctx, turn);
+          yield* completeAssistantSegment(ctx, turn);
           const sessionId = ctx.resumeSessionId;
           if (sessionId === undefined) {
-            // No session id was ever reported (no run_start). Report the turn
-            // as failed so sendTurn does not return a bogus resume cursor.
+            // No session id was ever reported (no run_start), so there is no
+            // resume cursor to hand back. Fail the turn rather than showing a
+            // completed turn next to a "turn start failed" activity.
+            const detail = "Command Code exited without reporting a session id.";
             yield* Deferred.fail(
               resumeReady,
               new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: ctx.threadId,
-                detail: "Command Code exited without reporting a session id.",
+                detail,
               }),
             ).pipe(Effect.ignore);
+            yield* settleTurnState(ctx, turn);
+            yield* publish({
+              type: "turn.completed",
+              ...(yield* base(ctx, turn.turnId)),
+              payload: { state: "failed", errorMessage: detail },
+            });
           } else {
             yield* Deferred.succeed(resumeReady, sessionId).pipe(Effect.ignore);
+            yield* settleTurnState(ctx, turn);
+            yield* publish({
+              type: "turn.completed",
+              ...(yield* base(ctx, turn.turnId)),
+              payload: { state: "completed" },
+            });
           }
-          yield* settleTurnState(ctx, turn);
-          yield* publish({
-            type: "turn.completed",
-            ...(yield* base(ctx, turn.turnId)),
-            payload: { state: "completed" },
-          });
         } else {
           const detail = stderrText.trim() || `Command Code exited with code ${exitCode}.`;
           yield* Deferred.fail(
@@ -1007,7 +1043,8 @@ export function makeCommandCodeAdapter(
           activeChild: undefined,
           activeFiber: undefined,
           activeTurn: undefined,
-          turnStarting: false,
+          sendGate: yield* Semaphore.make(1),
+          turnSettled: undefined,
           turns: [],
           stopped: false,
         };
@@ -1028,7 +1065,8 @@ export function makeCommandCodeAdapter(
         return session;
       });
 
-    const claimTurn = (
+    /** Validates the request and resolves its session. It does not claim the turn. */
+    const resolveTurnRequest = (
       input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
     ): Effect.Effect<
       { readonly ctx: CommandCodeSessionContext; readonly prompt: string },
@@ -1066,15 +1104,6 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        if (ctx.activeTurn || ctx.turnStarting) {
-          return Effect.fail(
-            new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "sendTurn",
-              issue: "Command Code headless mode does not support mid-turn steering.",
-            }),
-          );
-        }
         if (input.modelSelection && input.modelSelection.instanceId !== instanceId) {
           return Effect.fail(
             new ProviderAdapterValidationError({
@@ -1084,26 +1113,35 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        ctx.turnStarting = true;
         return Effect.succeed({ ctx, prompt: input.input.trim() });
       });
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
-      Effect.acquireUseRelease(
-        claimTurn(input),
-        ({ ctx, prompt }) =>
+      resolveTurnRequest(input).pipe(
+        Effect.flatMap(({ ctx, prompt }) =>
           Effect.gen(function* () {
+            // Command Code headless cannot steer a running turn, so a send that
+            // arrives mid-turn waits here and then runs as its own turn. The
+            // wait is interruptible and the gate is released on every turn exit
+            // path, so stopping the session never strands a waiter.
+            const previous = ctx.turnSettled;
+            if (previous !== undefined) yield* Deferred.await(previous);
+            if (ctx.stopped || sessions.get(ctx.threadId) !== ctx) {
+              return yield* new ProviderAdapterSessionNotFoundError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+              });
+            }
             const turnId = TurnId.make(yield* randomUUID);
             const turn: TurnState = {
               turnId,
-              assistantItemId: RuntimeItemId.make(`${turnId}-assistant`),
               reasoningItemId: RuntimeItemId.make(`${turnId}-reasoning`),
-              assistantStarted: false,
-              assistantCompleted: false,
+              assistantSegment: undefined,
+              assistantSegmentCount: 0,
+              assistantTextEmitted: false,
               reasoningStarted: false,
               reasoningCompleted: false,
               reasoningBlockHasDelta: false,
-              streamedText: "",
               interrupted: false,
               tools: new Map(),
               tasks: new Set(),
@@ -1131,6 +1169,7 @@ export function makeCommandCodeAdapter(
               payload: { model },
             });
             const resumeReady = yield* Deferred.make<string, ProviderAdapterProcessError>();
+            const settled = yield* Deferred.make<void>();
             ctx.activeFiber = yield* runTurn(
               ctx,
               turn,
@@ -1139,7 +1178,11 @@ export function makeCommandCodeAdapter(
               reasoningEffort,
               input.interactionMode ?? "default",
               resumeReady,
-            ).pipe(Effect.forkIn(ctx.scope));
+            ).pipe(
+              Effect.ensuring(Deferred.succeed(settled, undefined).pipe(Effect.asVoid)),
+              Effect.forkIn(ctx.scope),
+            );
+            ctx.turnSettled = settled;
             const sessionId = yield* Deferred.await(resumeReady).pipe(
               Effect.timeoutOption(startupTimeoutMs),
               Effect.flatMap((option) =>
@@ -1169,12 +1212,10 @@ export function makeCommandCodeAdapter(
                 totalProcessedTokens: ctx.totalProcessedTokens,
               },
             };
-          }),
-        ({ ctx }) =>
-          Effect.sync(() => {
-            ctx.turnStarting = false;
-          }),
+          }).pipe(ctx.sendGate.withPermit),
+        ),
       );
+
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
       threadId,
       turnId,

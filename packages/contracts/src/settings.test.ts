@@ -180,6 +180,7 @@ describe("Command Code provider settings", () => {
       enabled: true,
       binaryPath: "command-code",
       customModels: [],
+      launchArgs: "",
     });
   });
 
@@ -190,6 +191,7 @@ describe("Command Code provider settings", () => {
           enabled: false,
           binaryPath: "  /opt/bin/command-code  ",
           customModels: ["custom/model"],
+          launchArgs: "  --max-turns 400  ",
         },
       },
     });
@@ -198,6 +200,7 @@ describe("Command Code provider settings", () => {
       enabled: false,
       binaryPath: "/opt/bin/command-code",
       customModels: ["custom/model"],
+      launchArgs: "--max-turns 400",
     });
   });
 

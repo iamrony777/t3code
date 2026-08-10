@@ -112,6 +112,8 @@ describe("buildCommandCodeTurnArgs", () => {
       "deepseek/deepseek-v4-flash",
       "--permission-mode",
       "dont-ask",
+      "--max-turns",
+      "250",
     ]);
   });
 
@@ -158,6 +160,8 @@ describe("buildCommandCodeTurnArgs", () => {
       "--model",
       "deepseek/deepseek-v4-flash",
       ...modeArgs,
+      "--max-turns",
+      "250",
     ]);
   });
 
@@ -172,6 +176,23 @@ describe("buildCommandCodeTurnArgs", () => {
     const args = buildCommandCodeTurnArgs({ ...base, reasoningEffort: "max" });
     expect(args.filter((arg) => arg === "--effort")).toHaveLength(1);
     expect(args).toContain("max");
+  });
+
+  it("defaults to a 250 turn budget", () => {
+    const args = buildCommandCodeTurnArgs(base);
+    expect(args.filter((arg) => arg === "--max-turns")).toHaveLength(1);
+    expect(args.slice(-2)).toEqual(["--max-turns", "250"]);
+  });
+
+  it("appends launch arguments after the default turn budget", () => {
+    const args = buildCommandCodeTurnArgs({ ...base, launchArgs: "--chrome" });
+    expect(args.slice(-3)).toEqual(["--max-turns", "250", "--chrome"]);
+  });
+
+  it("defers to a user-supplied --max-turns instead of the default", () => {
+    const args = buildCommandCodeTurnArgs({ ...base, launchArgs: "--max-turns 400" });
+    expect(args.filter((arg) => arg === "--max-turns")).toHaveLength(1);
+    expect(args.slice(-2)).toEqual(["--max-turns", "400"]);
   });
 });
 

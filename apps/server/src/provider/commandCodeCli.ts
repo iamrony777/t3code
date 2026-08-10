@@ -1,7 +1,10 @@
 import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { parseCliArgs, tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+
+const DEFAULT_MAX_TURNS = "250";
 
 const CommandCodeStatusWire = Schema.Struct({
   authenticated: Schema.Boolean,
@@ -102,6 +105,7 @@ export function buildCommandCodeTurnArgs(input: {
   readonly interactionMode: ProviderInteractionMode;
   readonly resumeSessionId?: string | undefined;
   readonly reasoningEffort?: string | undefined;
+  readonly launchArgs?: string | undefined;
 }): ReadonlyArray<string> {
   const args = [
     "-p",
@@ -117,12 +121,24 @@ export function buildCommandCodeTurnArgs(input: {
       : []),
   ];
 
-  if (input.interactionMode === "plan") return [...args, "--plan"];
-  if (input.runtimeMode === "full-access") return [...args, "--yolo"];
-  if (input.runtimeMode === "auto" || input.runtimeMode === "auto-accept-edits") {
-    return [...args, "--auto-accept"];
-  }
-  return [...args, "--permission-mode", "dont-ask"];
+  const modeArgs =
+    input.interactionMode === "plan"
+      ? ["--plan"]
+      : input.runtimeMode === "full-access"
+        ? ["--yolo"]
+        : input.runtimeMode === "auto" || input.runtimeMode === "auto-accept-edits"
+          ? ["--auto-accept"]
+          : ["--permission-mode", "dont-ask"];
+
+  const launchArgv = tokenizeCliArgs(input.launchArgs);
+  const hasMaxTurns = "max-turns" in parseCliArgs(launchArgv).flags;
+
+  return [
+    ...args,
+    ...modeArgs,
+    ...(hasMaxTurns ? [] : ["--max-turns", DEFAULT_MAX_TURNS]),
+    ...launchArgv,
+  ];
 }
 
 export function parseCommandCodeNdjsonLine(line: string): CommandCodeOutputFrame | undefined {

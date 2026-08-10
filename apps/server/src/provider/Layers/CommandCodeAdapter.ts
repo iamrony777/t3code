@@ -835,6 +835,7 @@ export function makeCommandCodeAdapter(
           interactionMode,
           ...(reasoningEffort ? { reasoningEffort } : {}),
           ...(ctx.resumeSessionId ? { resumeSessionId: ctx.resumeSessionId } : {}),
+          ...(settings.launchArgs ? { launchArgs: settings.launchArgs } : {}),
         });
         const binaryPath = settings.binaryPath || "command-code";
         const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });

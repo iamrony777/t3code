@@ -438,9 +438,21 @@ export const CommandCodeSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    launchArgs: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description:
+          "Additional CLI arguments passed on session start, e.g. --max-turns 400. Defaults to --max-turns 250 when unset.",
+        providerSettingsForm: {
+          placeholder: "e.g. --max-turns 400",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
   },
   {
-    order: ["binaryPath"],
+    order: ["binaryPath", "launchArgs"],
   },
 );
 export type CommandCodeSettings = typeof CommandCodeSettings.Type;
@@ -725,6 +737,7 @@ const CommandCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  launchArgs: Schema.optionalKey(TrimmedString),
 });
 
 const OpenCodeSettingsPatch = Schema.Struct({

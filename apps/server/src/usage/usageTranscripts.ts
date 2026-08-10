@@ -273,9 +273,10 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
  * ```
  *
  * Token semantics observed on disk:
- * - `inputTokens` is a *cumulative* running total that includes the cached
- *   portion, so `uncachedInputTokens` is `inputTokens` minus
- *   `cacheReadTokens` minus `cacheWriteTokens` (clamped at zero).
+ * - `inputTokens` is the per-request prompt size, including the cached portion,
+ *   so `uncachedInputTokens` is `inputTokens` minus `cacheReadTokens` minus
+ *   `cacheWriteTokens` (clamped at zero). It is not cumulative: it drops back
+ *   down after a compaction.
  * - `cacheReadTokens` / `cacheWriteTokens` are per-message deltas.
  * - `outputTokens` is per-message.
  * - `reasoningTokens` is not broken out (thinking is folded into output).
@@ -309,7 +310,7 @@ export function parseCommandCodeLine(line: string, sessionId: string): UsageReco
   const outputTokens = int(usageRecord["outputTokens"]);
 
   const totals: UsageTokenTotals = {
-    // inputTokens is cumulative and includes the cached portion.
+    // inputTokens is the per-request prompt size, including the cached portion.
     uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
     cachedInputTokens,
     cacheCreationTokens,

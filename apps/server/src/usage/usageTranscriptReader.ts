@@ -33,7 +33,8 @@ export interface TranscriptFile {
 }
 
 /**
- * Lists `.jsonl` transcripts under `root` last modified at or after `sinceMs`.
+ * Lists `provider`'s `.jsonl` transcripts under `root` last modified at or
+ * after `sinceMs`.
  *
  * Errors on individual entries are swallowed: session files rotate and get
  * removed while the walk is in flight, and a partial listing is far better than
@@ -42,6 +43,7 @@ export interface TranscriptFile {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
+  provider: UsageProviderKind,
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
 
@@ -59,6 +61,10 @@ export async function listTranscriptFiles(
         continue;
       }
       if (!entry.name.endsWith(".jsonl")) continue;
+      // Command Code parks `<uuid>.checkpoints.jsonl` beside `<uuid>.jsonl`.
+      // Checkpoint lines carry no usage, but the session id comes from the file
+      // name, so scanning one would invent a `<uuid>.checkpoints` session.
+      if (provider === "commandcode" && entry.name.endsWith(".checkpoints.jsonl")) continue;
       try {
         const stats = await NodeFSP.stat(child);
         if (stats.mtimeMs >= sinceMs) {

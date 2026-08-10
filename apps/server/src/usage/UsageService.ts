@@ -15,6 +15,7 @@ import * as NodeOS from "node:os";
 
 import {
   USAGE_CONTRACT_VERSION,
+  type ProviderInstanceConfigMap,
   type UsageProviderKind,
   type UsageSource,
   type UsageSummary,
@@ -37,6 +38,8 @@ import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { resolveCommandCodeSettingsFilePath } from "../provider/commandCodeGlobalOptions.ts";
+import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -196,6 +199,36 @@ export const make = Effect.gen(function* () {
       return nestedExists ? nested : path.join(homePath, "projects");
     });
 
+  /**
+   * Command Code transcript directories, one per configured instance.
+   *
+   * Command Code has no home setting of its own: it reads `~/.commandcode` out
+   * of the environment it is spawned in, so an instance that overrides `HOME`
+   * keeps its own transcripts. Resolving through the same helper the driver
+   * uses for `config.json` keeps this in step with the directory the provider
+   * actually writes to. Instances that land on one directory collapse to one
+   * source; with no instance configured this is the server's own environment,
+   * which is what the driver would spawn with.
+   */
+  const resolveCommandCodeTranscriptDirs = (
+    providerInstances: ProviderInstanceConfigMap,
+  ): readonly string[] => {
+    // The Command Code driver kind and its usage provider kind share a slug.
+    const environments = Object.values(providerInstances)
+      .filter((instance) => instance.driver === "commandcode")
+      .map((instance) => mergeProviderInstanceEnvironment(instance.environment));
+    if (environments.length === 0) environments.push(process.env);
+
+    const dirs = new Set<string>();
+    for (const environment of environments) {
+      const settingsFilePath = resolveCommandCodeSettingsFilePath(environment, path.join);
+      if (settingsFilePath === undefined) continue;
+      // `<home>/.commandcode/config.json` sits beside `<home>/.commandcode/projects`.
+      dirs.add(path.join(path.dirname(settingsFilePath), "projects"));
+    }
+    return [...dirs];
+  };
+
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -223,14 +256,8 @@ export const make = Effect.gen(function* () {
       { provider: "codex", dir: path.join(codexLayout.sharedHomePath, "sessions") },
     ];
 
-    // Command Code has no server setting; it writes transcripts under
-    // `~/.commandcode/projects` from the CLI's own home.
-    const commandCodeHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-    if (commandCodeHome) {
-      dirs.push({
-        provider: "commandcode",
-        dir: path.join(commandCodeHome, ".commandcode", "projects"),
-      });
+    for (const dir of resolveCommandCodeTranscriptDirs(settings.providerInstances)) {
+      dirs.push({ provider: "commandcode", dir });
     }
 
     return dirs;
@@ -357,7 +384,7 @@ export const make = Effect.gen(function* () {
       }
 
       walkedRoots.push(dir);
-      const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
+      const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs, provider));
       let scannedFiles = 0;
       let skippedFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a

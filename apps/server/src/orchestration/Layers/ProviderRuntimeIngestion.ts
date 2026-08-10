@@ -94,9 +94,6 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
-const REASONING_TEXT_BY_ITEM_CACHE_CAPACITY = 10_000;
-const REASONING_TEXT_BY_ITEM_TTL = Duration.minutes(120);
-const MAX_BUFFERED_REASONING_CHARS = 24_000;
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
@@ -812,23 +809,6 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (event.payload.itemType === "reasoning") {
-        return [
-          {
-            id: event.eventId,
-            createdAt: event.createdAt,
-            tone: "info",
-            kind: "reasoning.completed",
-            summary: "Thinking",
-            payload: {
-              itemId: event.itemId ?? "",
-              itemType: event.payload.itemType,
-            },
-            turnId: toTurnId(event.turnId) ?? null,
-            ...maybeSequence,
-          },
-        ];
-      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -855,23 +835,6 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (event.payload.itemType === "reasoning") {
-        return [
-          {
-            id: event.eventId,
-            createdAt: event.createdAt,
-            tone: "info",
-            kind: "reasoning.started",
-            summary: "Thinking",
-            payload: {
-              itemId: event.itemId ?? "",
-              itemType: event.payload.itemType,
-            },
-            turnId: toTurnId(event.turnId) ?? null,
-            ...maybeSequence,
-          },
-        ];
-      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -942,16 +905,6 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
-  });
-
-  // Reasoning text streams in as content.delta events under a stable itemId.
-  // The client renders one "Thinking" row per block, so the text accumulates
-  // here and is flushed as a reasoning.updated activity that replaces the
-  // previous one (same stable activity id) rather than appending per-delta.
-  const bufferedReasoningTextByItemId = yield* Cache.make<string, string>({
-    capacity: REASONING_TEXT_BY_ITEM_CACHE_CAPACITY,
-    timeToLive: REASONING_TEXT_BY_ITEM_TTL,
-    lookup: () => Effect.succeed(""),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -1163,29 +1116,6 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
-
-  /**
-   * Appends a reasoning delta to the per-item buffer, returning the new
-   * accumulated text. The buffer is capped so a runaway reasoning block cannot
-   * grow without bound: past the cap the text is truncated to the cap.
-   */
-  const appendBufferedReasoningText = (itemId: string, delta: string) =>
-    Cache.getOption(bufferedReasoningTextByItemId, itemId).pipe(
-      Effect.flatMap((existingText) => {
-        const nextText = Option.match(existingText, {
-          onNone: () => delta,
-          onSome: (text) => `${text}${delta}`,
-        });
-        const capped =
-          nextText.length > MAX_BUFFERED_REASONING_CHARS
-            ? nextText.slice(0, MAX_BUFFERED_REASONING_CHARS)
-            : nextText;
-        return Cache.set(bufferedReasoningTextByItemId, itemId, capped).pipe(Effect.as(capped));
-      }),
-    );
-
-  const clearBufferedReasoningText = (itemId: string) =>
-    Cache.invalidate(bufferedReasoningTextByItemId, itemId);
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -1462,13 +1392,6 @@ const make = Effect.gen(function* () {
         taskDescriptionKeys,
         (key) =>
           key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
-        { concurrency: 1 },
-      ).pipe(Effect.asVoid);
-      // Reasoning itemIds are not thread-scoped, so on session exit clear the
-      // whole reasoning buffer; the TTL bounds it in the normal case.
-      yield* Effect.forEach(
-        Array.from(yield* Cache.keys(bufferedReasoningTextByItemId)),
-        (itemId) => clearBufferedReasoningText(itemId),
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -1768,41 +1691,6 @@ const make = Effect.gen(function* () {
             delta: assistantDelta,
             ...(turnId ? { turnId } : {}),
             createdAt: now,
-          });
-        }
-      }
-
-      const reasoningDelta =
-        event.type === "content.delta" &&
-        (event.payload.streamKind === "reasoning_text" ||
-          event.payload.streamKind === "reasoning_summary_text")
-          ? event.payload.delta
-          : undefined;
-      if (reasoningDelta && reasoningDelta.length > 0) {
-        const reasoningItemId = event.itemId;
-        if (reasoningItemId) {
-          const accumulated = yield* appendBufferedReasoningText(reasoningItemId, reasoningDelta);
-          yield* orchestrationEngine.dispatch({
-            type: "thread.activity.append",
-            commandId: yield* providerCommandId(event, "reasoning-updated"),
-            threadId: thread.id,
-            activity: {
-              // Stable per-item id: the projector replaces the previous
-              // reasoning.updated row for this block, so streaming deltas
-              // update one "Thinking" row instead of appending hundreds.
-              id: EventId.make(`reasoning:${thread.id}:${reasoningItemId}`),
-              createdAt: event.createdAt,
-              tone: "info",
-              kind: "reasoning.updated",
-              summary: "Thinking",
-              payload: {
-                itemId: reasoningItemId,
-                itemType: "reasoning",
-                text: truncateDetail(accumulated),
-              },
-              turnId: toTurnId(event.turnId) ?? null,
-            },
-            createdAt: event.createdAt,
           });
         }
       }

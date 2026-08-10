@@ -12,6 +12,7 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { titleForToolName } from "@t3tools/shared/toolActivity";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -899,8 +900,9 @@ export function makeOpenCodeAdapter(
 
           if (part.type === "tool") {
             const itemType = toToolLifecycleItemType(part.tool);
+            const fallbackTitle = titleForToolName(part.tool, itemType);
             const title =
-              part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
+              part.state.status === "running" ? (part.state.title ?? fallbackTitle) : fallbackTitle;
             const detail = detailFromToolPart(part);
             const payload = {
               itemType,

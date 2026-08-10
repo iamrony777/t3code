@@ -183,6 +183,43 @@ function classifyToolAction(input: {
   return "other";
 }
 
+/**
+ * Friendly label for a tool lifecycle item, so adapters never surface a raw
+ * CLI tool name (`read_file`, `mcp__parallel__web_search`) as the row title.
+ */
+export function titleForToolItemType(itemType: ToolLifecycleItemType): string {
+  switch (itemType) {
+    case "command_execution":
+      return "Command run";
+    case "file_change":
+      return "File change";
+    case "mcp_tool_call":
+      return "MCP tool call";
+    case "collab_agent_tool_call":
+      return "Subagent task";
+    case "web_search":
+      return "Web search";
+    case "image_view":
+      return "Image view";
+    default:
+      return "Tool call";
+  }
+}
+
+/**
+ * `mcp__<server>__<tool>` reads better as `server · tool`, matching how the
+ * Codex adapter titles MCP calls. Non-MCP names fall back to the item label.
+ */
+export function titleForToolName(toolName: string, itemType: ToolLifecycleItemType): string {
+  const mcp = /^mcp__(?<server>[^_]+(?:_[^_]+)*)__(?<tool>.+)$/u.exec(toolName.trim());
+  const server = mcp?.groups?.server;
+  const tool = mcp?.groups?.tool;
+  if (server && tool) {
+    return `${server} · ${tool.replace(/_/gu, " ")}`;
+  }
+  return titleForToolItemType(itemType);
+}
+
 export interface ToolActivityPresentationInput {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | null | undefined;

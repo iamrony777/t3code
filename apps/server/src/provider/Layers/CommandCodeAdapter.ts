@@ -17,6 +17,7 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { titleForToolName } from "@t3tools/shared/toolActivity";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -429,11 +430,13 @@ export function makeCommandCodeAdapter(
       if (!toolCallId) return undefined;
       const existing = turn.tools.get(toolCallId);
       if (existing) return { toolCallId, ...existing };
-      const title = eventString(event, "toolName", "tool_name") ?? "Command Code tool";
+      const toolName = eventString(event, "toolName", "tool_name");
+      const itemType = toolName ? toolItemType(toolName) : "dynamic_tool_call";
       const created = {
         itemId: RuntimeItemId.make(`${turn.turnId}-tool-${toolCallId}`),
-        itemType: toolItemType(title),
-        title,
+        itemType,
+        // Raw tool name stays in `data` (the source event); the title is the label.
+        title: toolName ? titleForToolName(toolName, itemType) : "Command Code tool",
       };
       turn.tools.set(toolCallId, created);
       return { toolCallId, ...created };

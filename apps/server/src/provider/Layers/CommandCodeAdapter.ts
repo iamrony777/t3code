@@ -86,6 +86,8 @@ interface TurnState {
   reasoningCompleted: boolean;
   reasoningBlockHasDelta: boolean;
   interrupted: boolean;
+  suppressTerminalState: boolean;
+  stderrTail: string;
   readonly tools: Map<
     string,
     {
@@ -880,7 +882,11 @@ export function makeCommandCodeAdapter(
           Stream.decodeText(),
           Stream.runFold(
             () => "",
-            (acc, chunk) => `${acc}${chunk}`.slice(-8_000),
+            (acc, chunk) => {
+              const stderrTail = `${acc}${chunk}`.slice(-8_000);
+              turn.stderrTail = stderrTail;
+              return stderrTail;
+            },
           ),
         );
         const [, stderrText, exitCode] = yield* Effect.all(
@@ -888,6 +894,9 @@ export function makeCommandCodeAdapter(
           { concurrency: "unbounded" },
         );
 
+        if (turn.suppressTerminalState) {
+          return;
+        }
         if (turn.interrupted || exitCode === 130) {
           yield* settleTurnState(ctx, turn);
           yield* publish({
@@ -1147,6 +1156,8 @@ export function makeCommandCodeAdapter(
               reasoningCompleted: false,
               reasoningBlockHasDelta: false,
               interrupted: false,
+              suppressTerminalState: false,
+              stderrTail: "",
               tools: new Map(),
               tasks: new Set(),
             };
@@ -1172,41 +1183,81 @@ export function makeCommandCodeAdapter(
               ...(yield* base(ctx, turnId)),
               payload: { model },
             });
-            const resumeReady = yield* Deferred.make<string, ProviderAdapterProcessError>();
-            const settled = yield* Deferred.make<void>();
-            ctx.activeFiber = yield* runTurn(
-              ctx,
-              turn,
-              prompt,
-              model,
-              reasoningEffort,
-              input.interactionMode ?? "default",
-              resumeReady,
-            ).pipe(
-              Effect.ensuring(Deferred.succeed(settled, undefined).pipe(Effect.asVoid)),
-              Effect.forkIn(ctx.scope),
-            );
-            ctx.turnSettled = settled;
-            const sessionId = yield* Deferred.await(resumeReady).pipe(
-              Effect.timeoutOption(startupTimeoutMs),
-              Effect.flatMap((option) =>
-                option._tag === "Some"
-                  ? Effect.succeed(option.value)
-                  : Effect.fail(
-                      new ProviderAdapterProcessError({
+            const startAttempt = Effect.fn("CommandCodeAdapter.startAttempt")(function* () {
+              const resumeReady = yield* Deferred.make<string, ProviderAdapterProcessError>();
+              const settled = yield* Deferred.make<void>();
+              turn.suppressTerminalState = false;
+              turn.stderrTail = "";
+              ctx.activeFiber = yield* runTurn(
+                ctx,
+                turn,
+                prompt,
+                model,
+                reasoningEffort,
+                input.interactionMode ?? "default",
+                resumeReady,
+              ).pipe(
+                Effect.ensuring(Deferred.succeed(settled, undefined).pipe(Effect.asVoid)),
+                Effect.forkIn(ctx.scope),
+              );
+              ctx.turnSettled = settled;
+              return { resumeReady, settled };
+            });
+            const awaitStartup = (
+              resumeReady: Deferred.Deferred<string, ProviderAdapterProcessError>,
+            ) => Deferred.await(resumeReady).pipe(Effect.timeoutOption(startupTimeoutMs));
+            const first = yield* startAttempt();
+            const firstStartup = yield* awaitStartup(first.resumeReady);
+            const sessionId =
+              firstStartup._tag === "Some"
+                ? firstStartup.value
+                : yield* Effect.gen(function* () {
+                    turn.suppressTerminalState = true;
+                    if (ctx.activeChild) {
+                      yield* terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore);
+                    }
+                    yield* Deferred.await(first.settled);
+                    if (turn.interrupted || ctx.stopped) {
+                      return yield* new ProviderAdapterProcessError({
                         provider: PROVIDER,
                         threadId: ctx.threadId,
+                        detail: "Command Code startup was interrupted.",
+                      });
+                    }
+                    yield* publish({
+                      type: "runtime.warning",
+                      ...(yield* base(ctx, turn.turnId)),
+                      payload: {
+                        message: "Command Code startup timed out; retrying once.",
                         detail:
-                          "Command Code did not report a session id before startup timed out.",
-                      }),
-                    ),
-              ),
-              Effect.tapError(() =>
-                ctx.activeChild
-                  ? terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore)
-                  : Effect.void,
-              ),
-            );
+                          "The first headless Command Code process did not report a session before the startup deadline.",
+                      },
+                    });
+                    const retry = yield* startAttempt();
+                    const retryStartup = yield* awaitStartup(retry.resumeReady);
+                    if (retryStartup._tag === "Some") return retryStartup.value;
+                    turn.suppressTerminalState = true;
+                    if (ctx.activeChild) {
+                      yield* terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore);
+                    }
+                    yield* Deferred.await(retry.settled);
+                    const stderrTail = turn.stderrTail.trim();
+                    const error = new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      detail: [
+                        "Command Code did not report a session id before startup timed out after two attempts.",
+                        ...(stderrTail ? [`Last stderr: ${stderrTail}`] : []),
+                      ].join(" "),
+                    });
+                    yield* settleTurnState(ctx, turn);
+                    yield* publish({
+                      type: "turn.completed",
+                      ...(yield* base(ctx, turn.turnId)),
+                      payload: { state: "failed", errorMessage: error.message },
+                    });
+                    return yield* error;
+                  });
             return {
               threadId: input.threadId,
               turnId,

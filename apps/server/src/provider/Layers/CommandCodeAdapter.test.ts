@@ -113,6 +113,33 @@ const writeResultBinary = (
     )
     .pipe(Effect.andThen(fs.chmod(binaryPath, 0o755)));
 
+const writeStartupRetryBinary = (
+  fs: FileSystem.FileSystem,
+  binaryPath: string,
+  sessionId: string,
+) =>
+  fs
+    .writeFileString(
+      binaryPath,
+      [
+        "#!/bin/sh",
+        "cat >/dev/null",
+        'count_file="$COMMAND_CODE_COUNT_FILE"',
+        "count=0",
+        'if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi',
+        "count=$((count + 1))",
+        'printf \'%s\\n\' "$count" > "$count_file"',
+        'if [ "$count" -eq 1 ]; then',
+        '  printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","delta":"starting"}}\'',
+        "  trap 'exit 143' TERM",
+        "  sleep 3600",
+        "fi",
+        `printf '%s\\n' '${JSON.stringify({ type: "event", event: { type: "run_start", sessionId } })}'`,
+        `printf '%s\\n' '${resultFrame(sessionId, { inputTokens: 1, outputTokens: 1 })}'`,
+      ].join("\n"),
+    )
+    .pipe(Effect.andThen(fs.chmod(binaryPath, 0o755)));
+
 const writeNativeTranscript = (
   fs: FileSystem.FileSystem,
   path: Path.Path,
@@ -375,12 +402,19 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const path = yield* Path.Path;
         const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-startup-" });
         const binaryPath = path.join(dir, "command-code");
+        const countFile = path.join(dir, "count");
         yield* fs.writeFileString(
           binaryPath,
           [
             "#!/bin/sh",
             "cat >/dev/null",
+            'count_file="$COMMAND_CODE_COUNT_FILE"',
+            "count=0",
+            'if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi',
+            "count=$((count + 1))",
+            'printf \'%s\\n\' "$count" > "$count_file"',
             'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","delta":"starting"}}\'',
+            "printf '%s\\n' \"second startup diagnostic\" >&2",
             "trap 'exit 143' TERM",
             "sleep 3600",
           ].join("\n"),
@@ -390,9 +424,95 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
           catalogController: effortValidator(),
+          environment: { ...process.env, COMMAND_CODE_COUNT_FILE: countFile },
           startupTimeoutMs: 100,
         });
         const threadId = ThreadId.make("thread-command-code-startup-timeout");
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const startedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              event.type === "content.delta" &&
+              event.payload.delta === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const retryFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              event.type === "runtime.warning" &&
+              event.payload.message === "Command Code startup timed out; retrying once.",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const retryStartedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              event.type === "content.delta" &&
+              event.payload.delta === "starting",
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        const turnExitFiber = yield* adapter
+          .sendTurn({ threadId, input: "start" })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Fiber.join(startedFiber);
+        yield* TestClock.adjust("101 millis");
+        yield* Fiber.join(retryFiber);
+        yield* Fiber.join(retryStartedFiber);
+        yield* TestClock.adjust("101 millis");
+
+        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+        expect((yield* Fiber.join(turnExitFiber))._tag).toBe("Failure");
+        expect(yield* fs.readFileString(countFile)).toBe("2\n");
+        expect(events.at(-1)).toMatchObject({
+          type: "turn.completed",
+          payload: {
+            state: "failed",
+            errorMessage: expect.stringContaining("second startup diagnostic"),
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect("retries one silent startup and completes the turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-startup-retry-" });
+        const binaryPath = path.join(dir, "command-code");
+        const countFile = path.join(dir, "count");
+        yield* writeStartupRetryBinary(fs, binaryPath, "session-startup-retry");
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: { ...process.env, COMMAND_CODE_COUNT_FILE: countFile },
+          startupTimeoutMs: 100,
+        });
+        const threadId = ThreadId.make("thread-command-code-startup-retry");
         const eventsFiber = yield* adapter.streamEvents.pipe(
           Stream.filter((event) => event.threadId === threadId),
           Stream.takeUntil((event) => event.type === "turn.completed"),
@@ -424,11 +544,13 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         yield* TestClock.adjust("101 millis");
 
         const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
-        expect((yield* Fiber.join(turnExitFiber))._tag).toBe("Failure");
+        expect(yield* fs.readFileString(countFile)).toBe("2\n");
+        expect(events.filter((event) => event.type === "runtime.warning")).toHaveLength(1);
         expect(events.at(-1)).toMatchObject({
           type: "turn.completed",
-          payload: { state: "failed" },
+          payload: { state: "completed" },
         });
+        expect((yield* Fiber.join(turnExitFiber))._tag).toBe("Success");
       }),
     ),
   );
@@ -440,11 +562,17 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const path = yield* Path.Path;
         const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-error-" });
         const binaryPath = path.join(dir, "command-code");
+        const countFile = path.join(dir, "count");
         yield* fs.writeFileString(
           binaryPath,
           [
             "#!/bin/sh",
             "cat >/dev/null",
+            'count_file="$COMMAND_CODE_COUNT_FILE"',
+            "count=0",
+            'if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi',
+            "count=$((count + 1))",
+            'printf \'%s\\n\' "$count" > "$count_file"',
             'printf \'%s\\n\' \'{"type":"result","subtype":"error","usage":{},"durationMs":5,"finalText":"","error":"Authentication required."}\'',
           ].join("\n"),
         );
@@ -453,6 +581,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
           instanceId,
           catalogController: effortValidator(),
+          environment: { ...process.env, COMMAND_CODE_COUNT_FILE: countFile },
         });
         const threadId = ThreadId.make("thread-command-code-startup-error");
         const terminalFiber = yield* adapter.streamEvents.pipe(
@@ -478,6 +607,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         expect(Option.getOrUndefined(terminal)).toMatchObject({
           payload: { state: "failed", errorMessage: "Authentication required." },
         });
+        expect(yield* fs.readFileString(countFile)).toBe("1\n");
       }),
     ),
   );

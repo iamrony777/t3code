@@ -104,6 +104,12 @@ Command Code cannot take a new instruction into a turn that is already running. 
 is fine: T3 Code holds the message and runs it as its own turn as soon as the current one finishes,
 in the order you sent them. To change course immediately, stop the turn first.
 
+### Startup recovery
+
+If a new Command Code headless process does not start promptly, T3 Code ends that process and
+retries it once automatically. Normal turns are unchanged. If the retry also fails, the thread is
+ready for another message and the error includes any safe diagnostic output the CLI provided.
+
 ## Usage reporting
 
 Command Code usage (tokens and cost) is reported on the **Usage** page. T3 Code scans Command

@@ -14,14 +14,23 @@
  */
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
+ *
+ * Adding a provider to {@link UsageProviderKind} is not such a change. The
+ * check only fires when the *environment* is older than the client, and an
+ * older environment simply never emits the new provider; its buckets still
+ * decode and merge. Bumping for a new provider would instead throw away that
+ * environment's claude and codex totals to signal one absent provider. The
+ * opposite skew, a client older than the environment, is not this check's job
+ * either: {@link UsageSummary} drops the individual buckets and sources whose
+ * provider the client cannot decode and keeps the rest.
  */
-export const USAGE_CONTRACT_VERSION = 4 as const;
+export const USAGE_CONTRACT_VERSION = 3 as const;
 
 export const UsageProviderKind = Schema.Literals(["claude", "codex", "commandcode"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
@@ -174,8 +183,12 @@ export const UsageSummary = Schema.Struct({
   timeZone: TrimmedNonEmptyString,
   sinceDay: UsageDay,
   untilDay: UsageDay,
-  buckets: Schema.Array(UsageBucket),
-  sources: Schema.Array(UsageSource),
+  // Providers grow over time. A client built before a provider existed cannot
+  // decode that provider's literal, and failing the array would take the whole
+  // summary down with it — every provider's usage lost to signal one the client
+  // could not have rendered anyway. Drop just those elements instead.
+  buckets: ForwardCompatibleArray(UsageBucket),
+  sources: ForwardCompatibleArray(UsageSource),
   pricing: UsagePricing,
   /** Wall-clock cost of the scan, surfaced in diagnostics. */
   scanDurationMs: NonNegativeInt,

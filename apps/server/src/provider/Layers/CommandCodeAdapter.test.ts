@@ -771,7 +771,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
-  it.effect("rejects attachments, approvals, and rollback explicitly", () =>
+  it.effect("rejects approvals and rollback explicitly", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({}), {
@@ -786,23 +786,6 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           cwd: process.cwd(),
           runtimeMode: "approval-required",
         });
-
-        const attachmentExit = yield* adapter
-          .sendTurn({
-            threadId,
-            input: "look",
-            attachments: [
-              {
-                type: "image",
-                id: "image-1",
-                name: "image.png",
-                mimeType: "image/png",
-                sizeBytes: 1,
-              },
-            ],
-          })
-          .pipe(Effect.exit);
-        expect(attachmentExit._tag).toBe("Failure");
 
         const approvalExit = yield* adapter
           .respondToRequest(threadId, ApprovalRequestId.make("request-1"), "accept")

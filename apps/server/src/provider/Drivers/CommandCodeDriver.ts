@@ -273,7 +273,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
       const httpClient = yield* HttpClient.HttpClient;
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
-      const { cwd } = yield* ServerConfig;
+      const { cwd, attachmentsDir } = yield* ServerConfig;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -302,6 +302,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         instanceId,
         catalogController,
         environment: processEnv,
+        attachmentsDir,
       });
       const textGeneration = yield* makeCommandCodeTextGeneration(
         effectiveConfig,

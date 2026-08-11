@@ -62,6 +62,8 @@ export interface CommandCodeAdapterOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
   readonly startupTimeoutMs?: number;
+  /** Granted with `--add-dir` so the CLI can read attached images by path. */
+  readonly attachmentsDir?: string;
 }
 
 export interface CommandCodeAdapterCatalogController extends CommandCodeReasoningEffortValidator {
@@ -907,6 +909,7 @@ export function makeCommandCodeAdapter(
       model: string,
       reasoningEffort: string | undefined,
       interactionMode: "default" | "plan",
+      hasAttachments: boolean,
       resumeReady: Deferred.Deferred<string, ProviderAdapterProcessError>,
     ) =>
       Effect.gen(function* () {
@@ -916,6 +919,8 @@ export function makeCommandCodeAdapter(
           interactionMode,
           ...(reasoningEffort ? { reasoningEffort } : {}),
           ...(ctx.resumeSessionId ? { resumeSessionId: ctx.resumeSessionId } : {}),
+          ...(options.attachmentsDir ? { attachmentsDir: options.attachmentsDir } : {}),
+          ...(hasAttachments ? { enableImageVision: true } : {}),
           ...(settings.launchArgs ? { launchArgs: settings.launchArgs } : {}),
         });
         const binaryPath = settings.binaryPath || "command-code";
@@ -1178,15 +1183,9 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        if (input.attachments && input.attachments.length > 0) {
-          return Effect.fail(
-            new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "sendTurn",
-              issue: "Command Code headless mode does not support attachments.",
-            }),
-          );
-        }
+        // Attachments need no special handling: ProviderService already appends
+        // each file's on-disk path to the prompt, and Command Code reads images
+        // by path (`--add-dir` grants the attachments dir).
         if (!input.input?.trim()) {
           return Effect.fail(
             new ProviderAdapterValidationError({
@@ -1274,6 +1273,7 @@ export function makeCommandCodeAdapter(
                 model,
                 reasoningEffort,
                 input.interactionMode ?? "default",
+                (input.attachments?.length ?? 0) > 0,
                 resumeReady,
               ).pipe(
                 Effect.ensuring(Deferred.succeed(settled, undefined).pipe(Effect.asVoid)),

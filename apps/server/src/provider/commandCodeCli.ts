@@ -105,8 +105,20 @@ export function buildCommandCodeTurnArgs(input: {
   readonly interactionMode: ProviderInteractionMode;
   readonly resumeSessionId?: string | undefined;
   readonly reasoningEffort?: string | undefined;
+  readonly attachmentsDir?: string | undefined;
+  readonly enableImageVision?: boolean | undefined;
   readonly launchArgs?: string | undefined;
 }): ReadonlyArray<string> {
+  const launchArgv = tokenizeCliArgs(input.launchArgs);
+  // Vision is opt-in and headless has no consent prompt, so an undecided
+  // setting reads as "off" and the model silently cannot see the image. Only
+  // turns that actually carry an attachment flip it, and an explicit
+  // `--config image-vision=…` in launch args always wins.
+  const imageVisionArgs =
+    input.enableImageVision && !launchArgv.some((arg) => arg.startsWith("image-vision"))
+      ? ["--config", "image-vision=enabled"]
+      : [];
+
   const args = [
     "-p",
     "--output-format",
@@ -119,6 +131,9 @@ export function buildCommandCodeTurnArgs(input: {
     ...(input.reasoningEffort && input.reasoningEffort !== "default"
       ? ["--effort", input.reasoningEffort]
       : []),
+    // Attached images live outside the workspace; without this the CLI cannot
+    // read the paths ProviderService appends to the prompt.
+    ...(input.attachmentsDir ? ["--add-dir", input.attachmentsDir] : []),
   ];
 
   const modeArgs =
@@ -130,11 +145,11 @@ export function buildCommandCodeTurnArgs(input: {
           ? ["--auto-accept"]
           : ["--permission-mode", "dont-ask"];
 
-  const launchArgv = tokenizeCliArgs(input.launchArgs);
   const hasMaxTurns = "max-turns" in parseCliArgs(launchArgv).flags;
 
   return [
     ...args,
+    ...imageVisionArgs,
     ...modeArgs,
     ...(hasMaxTurns ? [] : ["--max-turns", DEFAULT_MAX_TURNS]),
     ...launchArgv,

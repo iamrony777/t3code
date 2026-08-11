@@ -124,6 +124,28 @@ describe("buildCommandCodeTurnArgs", () => {
     expect(args).not.toContain("--continue");
   });
 
+  it("enables image vision for attachment turns unless launch args decide it", () => {
+    expect(buildCommandCodeTurnArgs({ ...base, enableImageVision: true })).toContain(
+      "image-vision=enabled",
+    );
+    expect(buildCommandCodeTurnArgs(base)).not.toContain("image-vision=enabled");
+    expect(
+      buildCommandCodeTurnArgs({
+        ...base,
+        enableImageVision: true,
+        launchArgs: "--config image-vision=disabled",
+      }),
+    ).not.toContain("image-vision=enabled");
+  });
+
+  it("grants the attachments dir so images can be read by path", () => {
+    const args = buildCommandCodeTurnArgs({ ...base, attachmentsDir: "/data/attachments" });
+    expect(args.slice(args.indexOf("--add-dir"), args.indexOf("--add-dir") + 2)).toEqual([
+      "--add-dir",
+      "/data/attachments",
+    ]);
+  });
+
   it.each([
     {
       name: "legacy plan",

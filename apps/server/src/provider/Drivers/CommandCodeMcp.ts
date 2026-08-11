@@ -89,10 +89,14 @@ export const runCommandCodeMcpCommand = Effect.fn("runCommandCodeMcpCommand")(
         );
         const exitCode = yield* child.exitCode;
         if (Number(exitCode) !== 0) {
-          yield* Effect.logWarning("Command Code MCP command failed.", {
-            args: input.args,
-            exitCode,
-          });
+          // `mcp remove` exits 1 when the entry is absent, which is the normal
+          // outcome of the pre-add sweep and of removing twice, so only a
+          // failed write is worth a warning.
+          const removal = input.args[1] === "remove";
+          yield* (removal ? Effect.logDebug : Effect.logWarning)(
+            "Command Code MCP command failed.",
+            { args: input.args, exitCode },
+          );
         }
       }).pipe(Effect.scoped, Effect.timeoutOption(COMMAND_TIMEOUT_MS)),
     );

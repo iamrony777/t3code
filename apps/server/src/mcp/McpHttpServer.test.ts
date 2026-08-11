@@ -97,6 +97,82 @@ it.effect("returns bounded structural preview snapshot failures", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("serves clients that negotiate 2025-03-26 without changing 2025-06-18", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const serverLayer = McpServer.layerHttp({
+        name: "MCP protocol test",
+        version: "1.0.0",
+        path: "/mcp",
+        protocols: McpHttpServer.mcpProtocols,
+      });
+      yield* HttpRouter.serve(serverLayer, {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const httpClient = yield* HttpClient.HttpClient;
+
+      const handshake = (version: string) =>
+        Effect.gen(function* () {
+          const initialize = yield* httpClient.post("/mcp", {
+            headers: { accept: "application/json, text/event-stream" },
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"${version}","capabilities":{},"clientInfo":{"name":"mcp-test","version":"1.0.0"}}}`,
+              "application/json",
+            ),
+          });
+          const headers = {
+            accept: "application/json, text/event-stream",
+            "mcp-session-id": initialize.headers["mcp-session-id"]!,
+            // The header Effect's transport rejects when it names an
+            // unregistered version, which is what broke 2025-03-26 clients.
+            "mcp-protocol-version": version,
+          };
+          const initialized = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+              "application/json",
+            ),
+          });
+          const listed = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+              "application/json",
+            ),
+          });
+          const negotiated = yield* initialize.json;
+          return {
+            initialize: initialize.status,
+            initialized: initialized.status,
+            listed: listed.status,
+            negotiated: (negotiated as { result: { protocolVersion: string } }).result
+              .protocolVersion,
+          };
+        });
+
+      expect(yield* handshake("2025-06-18")).toEqual({
+        initialize: 200,
+        initialized: 202,
+        listed: 200,
+        negotiated: "2025-06-18",
+      });
+      expect(yield* handshake("2025-03-26")).toEqual({
+        initialize: 200,
+        initialized: 202,
+        listed: 200,
+        negotiated: "2025-03-26",
+      });
+      // An unknown version still falls back to the default and is still
+      // refused at the header check, exactly as before.
+      const unknown = yield* handshake("2024-11-05");
+      expect(unknown.negotiated).toBe("2025-06-18");
+      expect(unknown.listed).toBe(400);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
   Effect.scoped(
     Effect.gen(function* () {

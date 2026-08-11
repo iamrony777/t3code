@@ -52,6 +52,12 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import {
+  commandCodeMcpAddArgs,
+  commandCodeMcpRemoveArgs,
+  runCommandCodeMcpCommand,
+} from "../Drivers/CommandCodeMcp.ts";
 
 const PROVIDER = ProviderDriverKind.make("commandcode");
 const RESUME_VERSION = 2 as const;
@@ -1146,6 +1152,28 @@ export function makeCommandCodeAdapter(
           stopped: false,
         };
         sessions.set(input.threadId, ctx);
+
+        // The CLI reads MCP servers from config at process start, so the entry
+        // has to exist before the first turn spawns. Sweeping first clears a
+        // stale token left behind by a crashed run.
+        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        if (mcpSession) {
+          const binaryPath = settings.binaryPath || "command-code";
+          const runMcpCommand = (args: ReadonlyArray<string>) =>
+            runCommandCodeMcpCommand({ binaryPath, args, cwd, environment, spawner });
+          yield* runMcpCommand(commandCodeMcpRemoveArgs());
+          yield* runMcpCommand(
+            commandCodeMcpAddArgs({
+              endpoint: mcpSession.endpoint,
+              authorizationHeader: mcpSession.authorizationHeader,
+            }),
+          );
+          yield* Scope.addFinalizer(
+            sessionScope,
+            runMcpCommand(commandCodeMcpRemoveArgs()).pipe(Effect.ignore),
+          );
+        }
+
         yield* publish({
           type: "session.started",
           ...(yield* base(ctx)),

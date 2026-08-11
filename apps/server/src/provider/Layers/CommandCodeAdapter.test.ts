@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
   CommandCodeSettings,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -19,6 +20,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { CommandCodeEffortCapability } from "../commandCodeCatalog.ts";
 import { commandCodeProjectSlugCandidate } from "../commandCodeTranscript.ts";
 import {
@@ -767,6 +769,59 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         expect(Option.getOrUndefined(terminal)).toMatchObject({
           payload: { state: "failed", errorMessage: "Command Code exited with code 1." },
         });
+      }),
+    ),
+  );
+
+  it.effect("wires the t3-code MCP server into local scope for the session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-mcp-" });
+        const binaryPath = path.join(dir, "command-code");
+        const argsLog = path.join(dir, "args.log");
+        yield* fs.writeFileString(
+          binaryPath,
+          ["#!/bin/sh", 'printf \'%s\\n\' "$*" >> "$COMMAND_CODE_ARGS_LOG"'].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const threadId = ThreadId.make("thread-command-code-mcp");
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-command-code-mcp"),
+          threadId,
+          providerSessionId: "provider-session-1",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:4123/mcp",
+          authorizationHeader: "Bearer token-abc",
+        });
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: { ...process.env, COMMAND_CODE_ARGS_LOG: argsLog },
+        });
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+
+        // A stale entry is swept before the credential is written, so a crashed
+        // run never leaves a dead token wired into the user's project config.
+        const afterStart = (yield* fs.readFileString(argsLog)).trim().split("\n");
+        expect(afterStart[0]).toBe("mcp remove --scope local t3-code");
+        expect(afterStart[1]).toContain("mcp add-json --scope local t3-code");
+        expect(afterStart[1]).toContain("http://127.0.0.1:4123/mcp");
+        expect(afterStart[1]).toContain("Bearer token-abc");
+
+        yield* adapter.stopSession(threadId);
+        const afterStop = (yield* fs.readFileString(argsLog)).trim().split("\n");
+        expect(afterStop.at(-1)).toBe("mcp remove --scope local t3-code");
+        McpProviderSession.clearMcpProviderSession(threadId);
       }),
     ),
   );

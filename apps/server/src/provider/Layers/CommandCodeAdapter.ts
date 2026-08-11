@@ -94,6 +94,8 @@ interface TurnState {
       readonly itemId: RuntimeItemId;
       readonly itemType: ToolLifecycleItemType;
       readonly title: string;
+      readonly hint: string | undefined;
+      readonly command: string | undefined;
     }
   >;
   readonly tasks: Set<string>;
@@ -147,6 +149,65 @@ function eventString(event: Readonly<Record<string, unknown>>, ...keys: Readonly
     if (typeof value === "string" && value.trim().length > 0) return value;
   }
   return undefined;
+}
+
+/**
+ * Streamed text, unlike metadata, is meaningful when it is pure whitespace: the
+ * CLI emits `"\n"` as its own delta, and dropping it as `eventString` does
+ * glues markdown lines together (closing ``` fences land mid-line).
+ */
+function eventText(event: Readonly<Record<string, unknown>>, ...keys: ReadonlyArray<string>) {
+  for (const key of keys) {
+    const value = event[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+const TOOL_HINT_LIMIT = 200;
+
+function toolInputRecord(
+  event: Readonly<Record<string, unknown>>,
+): Record<string, unknown> | undefined {
+  for (const key of ["input", "toolInput", "tool_input", "args", "arguments"]) {
+    const value = event[key];
+    if (Predicate.isObject(value) && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function toolCommand(input: Record<string, unknown> | undefined): string | undefined {
+  for (const key of ["command", "cmd"]) {
+    const value = input?.[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    if (Array.isArray(value)) {
+      const parts = value.filter(
+        (part): part is string => typeof part === "string" && part.trim().length > 0,
+      );
+      if (parts.length > 0) return parts.join(" ");
+    }
+  }
+  return undefined;
+}
+
+/**
+ * One-line hint for a tool row, e.g. `run_command: vp test`. Command Code never
+ * sends a human summary, so derive one from the tool input — otherwise every
+ * row collapses to the bare item label ("Command run", "Tool call").
+ */
+function toolHint(
+  toolName: string | undefined,
+  input: Record<string, unknown> | undefined,
+  command: string | undefined,
+): string | undefined {
+  const body =
+    command ?? (input && Object.keys(input).length > 0 ? JSON.stringify(input) : undefined);
+  const parts = [toolName?.trim(), body].filter((part): part is string => Boolean(part));
+  if (parts.length === 0) return undefined;
+  const hint = parts.join(": ").replace(/\s+/g, " ").trim();
+  return hint.length > TOOL_HINT_LIMIT ? `${hint.slice(0, TOOL_HINT_LIMIT - 1)}…` : hint;
 }
 
 function aggregateUsageSnapshot(usage: unknown, durationMs: number) {
@@ -434,15 +495,31 @@ export function makeCommandCodeAdapter(
       if (existing) return { toolCallId, ...existing };
       const toolName = eventString(event, "toolName", "tool_name");
       const itemType = toolName ? toolItemType(toolName) : "dynamic_tool_call";
+      const input = toolInputRecord(event);
+      const command = toolCommand(input);
       const created = {
         itemId: RuntimeItemId.make(`${turn.turnId}-tool-${toolCallId}`),
         itemType,
         // Raw tool name stays in `data` (the source event); the title is the label.
         title: toolName ? titleForToolName(toolName, itemType) : "Command Code tool",
+        hint: toolHint(toolName, input, command),
+        command,
       };
       turn.tools.set(toolCallId, created);
       return { toolCallId, ...created };
     };
+
+    /**
+     * Command rows preview from `data.item.command`, so surface the parsed
+     * command there while leaving the source event untouched underneath.
+     */
+    const toolData = (
+      tool: { readonly command: string | undefined },
+      event: Readonly<Record<string, unknown>>,
+    ) =>
+      tool.command === undefined || "item" in event
+        ? event
+        : { ...event, item: { command: tool.command } };
 
     const handleEvent = (
       ctx: CommandCodeSessionContext,
@@ -482,7 +559,7 @@ export function makeCommandCodeAdapter(
             break;
           }
           case "thinking_delta": {
-            const delta = eventString(event, "delta", "text");
+            const delta = eventText(event, "delta", "text");
             if (!turn.reasoningStarted) {
               turn.reasoningStarted = true;
               yield* publish({
@@ -504,7 +581,7 @@ export function makeCommandCodeAdapter(
             break;
           }
           case "thinking_end": {
-            const text = eventString(event, "text");
+            const text = eventText(event, "text");
             if (!turn.reasoningStarted && text !== undefined) {
               turn.reasoningStarted = true;
               yield* publish({
@@ -536,7 +613,8 @@ export function makeCommandCodeAdapter(
                 itemType: tool.itemType,
                 status: "inProgress",
                 title: tool.title,
-                data: event,
+                ...(tool.hint ? { detail: tool.hint } : {}),
+                data: toolData(tool, event),
               },
             });
             break;
@@ -555,10 +633,10 @@ export function makeCommandCodeAdapter(
                 itemType: tool.itemType,
                 status: "inProgress",
                 title: tool.title,
-                ...(eventString(event, "partial", "description")
-                  ? { detail: eventString(event, "partial", "description") }
+                ...((eventString(event, "partial", "description") ?? tool.hint)
+                  ? { detail: eventString(event, "partial", "description") ?? tool.hint }
                   : {}),
-                data: event,
+                data: toolData(tool, event),
               },
             });
             break;
@@ -580,7 +658,8 @@ export function makeCommandCodeAdapter(
                   itemType: tool.itemType,
                   status: "inProgress",
                   title: tool.title,
-                  data: event,
+                  ...(tool.hint ? { detail: tool.hint } : {}),
+                  data: toolData(tool, event),
                 },
               });
             }
@@ -598,10 +677,10 @@ export function makeCommandCodeAdapter(
                 itemType: tool.itemType,
                 status,
                 title: tool.title,
-                ...(eventString(event, "result", "error", "hookOutput")
-                  ? { detail: eventString(event, "result", "error", "hookOutput") }
+                ...((eventString(event, "result", "error", "hookOutput") ?? tool.hint)
+                  ? { detail: eventString(event, "result", "error", "hookOutput") ?? tool.hint }
                   : {}),
-                data: event,
+                data: toolData(tool, event),
               },
             });
             break;
@@ -705,7 +784,7 @@ export function makeCommandCodeAdapter(
             break;
           }
           case "text_delta": {
-            const delta = eventString(event, "delta", "text");
+            const delta = eventText(event, "delta", "text");
             const segment = yield* openAssistantSegment(ctx, turn, event);
             if (delta !== undefined) {
               segment.text += delta;

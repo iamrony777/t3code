@@ -1165,6 +1165,77 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
+  it.effect("keeps newline-only deltas and summarizes tool inputs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-markdown-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-md"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_start","messageId":"message-1"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"```bash"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"\\n"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"echo hi"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"\\n"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"text_delta","messageId":"message-1","delta":"```"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"message_end","messageId":"message-1"}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"tool_queued","toolCallId":"tool-1","toolName":"run_command","input":{"command":"vp test"}}}\'',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"tool_queued","toolCallId":"tool-2","toolName":"read_file","input":{"path":"README.md"}}}\'',
+            'printf \'%s\\n\' \'{"type":"result","subtype":"success","sessionId":"session-md","usage":{},"durationMs":3,"finalText":"done"}\'',
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+        });
+        const threadId = ThreadId.make("thread-command-code-markdown");
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "go" });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        // A dropped "\n" delta would glue the closing fence onto `echo hi`.
+        const assistantText = events.flatMap((event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message"
+            ? [event.payload.detail]
+            : [],
+        );
+        expect(assistantText).toEqual(["```bash\necho hi\n```"]);
+
+        const toolRows = events.flatMap((event) =>
+          event.type === "item.started" && event.payload.itemType !== "assistant_message"
+            ? [{ detail: event.payload.detail, data: event.payload.data }]
+            : [],
+        );
+        expect(toolRows.map((row) => row.detail)).toEqual([
+          "run_command: vp test",
+          'read_file: {"path":"README.md"}',
+        ]);
+        expect(toolRows[0]?.data).toMatchObject({ item: { command: "vp test" } });
+      }),
+    ),
+  );
+
   it.effect(
     "reports native active context while cumulative aggregate grows across compaction",
     () =>

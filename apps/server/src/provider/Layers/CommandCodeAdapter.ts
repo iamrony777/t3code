@@ -322,8 +322,30 @@ function activeUsageSnapshot(
   };
 }
 
+/** `{ todos: [{ content, status }] }`, the CLI's `todo_write` input. */
+function planStepsFromTodoInput(
+  input: Record<string, unknown> | undefined,
+): ReadonlyArray<{ step: string; status: "pending" | "inProgress" | "completed" }> {
+  const todos = input?.todos;
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .filter((todo): todo is Record<string, unknown> => Predicate.isObject(todo))
+    .map((todo) => ({
+      step: typeof todo.content === "string" && todo.content.trim() ? todo.content.trim() : "Task",
+      status:
+        todo.status === "completed"
+          ? ("completed" as const)
+          : todo.status === "in_progress"
+            ? ("inProgress" as const)
+            : ("pending" as const),
+    }));
+}
+
 function toolItemType(toolName: string): ToolLifecycleItemType {
   const normalized = toolName.toLowerCase();
+  // Checked before the edit/write branch, which "todo_write" would otherwise
+  // match and render as a file change.
+  if (normalized.includes("todo")) return "dynamic_tool_call";
   if (normalized.includes("command") || normalized.includes("shell") || normalized === "bash") {
     return "command_execution";
   }
@@ -688,6 +710,19 @@ export function makeCommandCodeAdapter(
                 data: toolData(tool, event),
               },
             });
+            // Todos drive the plan panel here as they do for the other
+            // providers, instead of reading as a tool row full of raw JSON.
+            const toolName = eventString(event, "toolName", "tool_name");
+            if (toolName?.toLowerCase().includes("todo")) {
+              const plan = planStepsFromTodoInput(toolInputRecord(event));
+              if (plan.length > 0) {
+                yield* publish({
+                  type: "turn.plan.updated",
+                  ...(yield* base(ctx, turn.turnId, event)),
+                  payload: { plan },
+                });
+              }
+            }
             break;
           }
           case "tool_running":

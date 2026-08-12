@@ -1581,6 +1581,74 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
+  it.effect("turns todo_write into a plan update instead of a file-change row", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-todo-" });
+        const binaryPath = path.join(dir, "command-code");
+        const todos = {
+          type: "tool_queued",
+          toolCallId: "tool-todo",
+          toolName: "todo_write",
+          input: {
+            todos: [
+              { content: "Locate the HTTP server wiring", status: "completed" },
+              { content: "Implement a /health endpoint", status: "in_progress" },
+              { content: "Add a test", status: "pending" },
+            ],
+          },
+        };
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            `printf '%s\\n' '${eventLine({ type: "run_start", sessionId: "session-todo" })}'`,
+            `printf '%s\\n' '${eventLine(todos)}'`,
+            `printf '%s\\n' '${resultFrame("session-todo", { inputTokens: 1, outputTokens: 1 })}'`,
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: { HOME: path.join(dir, "home"), PATH: process.env.PATH },
+        });
+        const threadId = ThreadId.make("thread-command-code-todo");
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "todos" });
+        const events = yield* Fiber.join(eventsFiber);
+        const plan = events.find((event) => event.type === "turn.plan.updated");
+        expect(plan?.type === "turn.plan.updated" ? plan.payload.plan : undefined).toEqual([
+          { step: "Locate the HTTP server wiring", status: "completed" },
+          { step: "Implement a /health endpoint", status: "inProgress" },
+          { step: "Add a test", status: "pending" },
+        ]);
+        const row = events.find(
+          (event) => event.type === "item.started" && event.payload.itemType !== "reasoning",
+        );
+        expect(row?.type === "item.started" ? row.payload.itemType : undefined).toBe(
+          "dynamic_tool_call",
+        );
+      }),
+    ),
+  );
+
   it.effect("reports usage when the CLI exits 0 without ever emitting a result frame", () =>
     Effect.scoped(
       Effect.gen(function* () {

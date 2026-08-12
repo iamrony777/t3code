@@ -1668,7 +1668,13 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
             "#!/bin/sh",
             "cat >/dev/null",
             `printf '%s\\n' '${eventLine({ type: "run_start", sessionId: "session-plan" })}'`,
+            `printf '%s\\n' '${eventLine({ type: "model_request_end", usage: { inputTokens: 7, outputTokens: 1 } })}'`,
             `printf '%s\\n' '${eventLine(exitPlan)}'`,
+            `printf '%s\\n' '${eventLine({ ...exitPlan, type: "tool_completed", result: "Plan approved — proceeding." })}'`,
+            // The real CLI auto-approves and implements from here; the adapter is
+            // expected to stop it before that happens.
+            "sleep 30",
+            `printf '%s\\n' '${eventLine({ type: "text_delta", delta: "implementing" })}'`,
             `printf '%s\\n' '${resultFrame("session-plan", { inputTokens: 1, outputTokens: 1 })}'`,
           ].join("\n"),
         );
@@ -1699,6 +1705,20 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         expect(
           proposed?.type === "turn.proposed.completed" ? proposed.payload.planMarkdown : undefined,
         ).toBe("## Plan\n\n1. Rename the variable");
+        // The turn settles at the plan — the composer's implement prompt needs
+        // that — and none of the CLI's post-approval output reaches the thread.
+        const completed = events.find((event) => event.type === "turn.completed");
+        expect(completed?.type === "turn.completed" ? completed.payload.state : undefined).toBe(
+          "completed",
+        );
+        expect(
+          events.some(
+            (event) =>
+              event.type === "content.delta" && event.payload.delta.includes("implementing"),
+          ),
+        ).toBe(false);
+        const usage = events.find((event) => event.type === "thread.token-usage.updated");
+        expect(usage ? eventUsage(usage) : undefined).toMatchObject({ usedTokens: 8 });
       }),
     ),
   );

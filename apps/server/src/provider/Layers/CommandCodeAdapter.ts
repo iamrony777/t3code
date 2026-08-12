@@ -97,6 +97,10 @@ interface TurnState {
   interrupted: boolean;
   suppressTerminalState: boolean;
   stderrTail: string;
+  interactionMode: "default" | "plan";
+  // Set once a plan-mode turn has presented its plan and the CLI was stopped so
+  // the user, not the CLI's headless auto-approval, decides what happens next.
+  planStopped: boolean;
   startedAtMs: number;
   // Rebuilt from the stream so a turn still reports usage when the CLI's final
   // `result` line never arrives. See `addStreamUsage`.
@@ -790,6 +794,24 @@ export function makeCommandCodeAdapter(
                 : event.type === "tool_denied"
                   ? "declined"
                   : "failed";
+            // Headless `exit_plan_mode` approves itself and marches straight
+            // into implementation, which plan mode exists to prevent. Stop the
+            // CLI here — after the tool result, so the resumed transcript has no
+            // dangling tool call — and let the settled turn hand the plan to the
+            // user. Waiting for the CLI to finish would also mean watching it
+            // fail every edit against the print-mode permission gate.
+            const completedTool = eventString(event, "toolName", "tool_name")?.toLowerCase();
+            if (
+              turn.interactionMode === "plan" &&
+              completedTool === "exit_plan_mode" &&
+              event.type === "tool_completed" &&
+              !turn.planStopped
+            ) {
+              turn.planStopped = true;
+              if (ctx.activeChild) {
+                yield* terminateChild(ctx.activeChild, "SIGTERM").pipe(Effect.ignore);
+              }
+            }
             yield* publish({
               type: "item.completed",
               ...(yield* base(ctx, turn.turnId, event)),
@@ -969,6 +991,40 @@ export function makeCommandCodeAdapter(
         });
       });
 
+    /**
+     * Settles a turn that ended without a result frame — the CLI truncated it at
+     * exit, or we stopped the CLI ourselves — using the usage rebuilt from the
+     * stream so the context meter keeps a reading.
+     */
+    const completeFromStream = (
+      ctx: CommandCodeSessionContext,
+      turn: TurnState,
+      sessionId: string,
+    ) =>
+      Effect.gen(function* () {
+        const elapsedMs = Math.max(
+          0,
+          DateTime.toEpochMillis(yield* DateTime.now) - turn.startedAtMs,
+        );
+        const aggregateUsage = aggregateUsageSnapshot(turn.streamUsage, elapsedMs);
+        ctx.totalProcessedTokens += aggregateUsage.usedTokens;
+        ctx.session = {
+          ...ctx.session,
+          resumeCursor: {
+            schemaVersion: RESUME_VERSION,
+            sessionId,
+            totalProcessedTokens: ctx.totalProcessedTokens,
+          },
+        };
+        yield* publishTokenUsage(ctx, turn, aggregateUsage, sessionId);
+        yield* settleTurnState(ctx, turn);
+        yield* publish({
+          type: "turn.completed",
+          ...(yield* base(ctx, turn.turnId)),
+          payload: { state: "completed" },
+        });
+      });
+
     const handleResult = (
       ctx: CommandCodeSessionContext,
       turn: TurnState,
@@ -1127,7 +1183,15 @@ export function makeCommandCodeAdapter(
         if (turn.suppressTerminalState) {
           return;
         }
-        if (turn.interrupted || exitCode === 130) {
+        if (turn.planStopped && ctx.resumeSessionId !== undefined && !turn.interrupted) {
+          // We killed the CLI on purpose once the plan was presented, so the
+          // signal exit is a completed turn: the plan proposal is the result,
+          // and the composer's implement prompt needs a settled turn to appear.
+          yield* completeReasoning(ctx, turn);
+          yield* completeAssistantSegment(ctx, turn);
+          yield* Deferred.succeed(resumeReady, ctx.resumeSessionId).pipe(Effect.ignore);
+          yield* completeFromStream(ctx, turn, ctx.resumeSessionId);
+        } else if (turn.interrupted || exitCode === 130) {
           yield* settleTurnState(ctx, turn);
           yield* publish({
             type: "turn.aborted",
@@ -1165,31 +1229,7 @@ export function makeCommandCodeAdapter(
             });
           } else {
             yield* Deferred.succeed(resumeReady, sessionId).pipe(Effect.ignore);
-            // The result frame is the usual carrier for usage, and it is the
-            // frame most likely to be lost to the CLI's exit-time stdout
-            // truncation. Fall back to the totals rebuilt from the stream so the
-            // context meter keeps a reading instead of disappearing.
-            const elapsedMs = Math.max(
-              0,
-              DateTime.toEpochMillis(yield* DateTime.now) - turn.startedAtMs,
-            );
-            const aggregateUsage = aggregateUsageSnapshot(turn.streamUsage, elapsedMs);
-            ctx.totalProcessedTokens += aggregateUsage.usedTokens;
-            ctx.session = {
-              ...ctx.session,
-              resumeCursor: {
-                schemaVersion: RESUME_VERSION,
-                sessionId,
-                totalProcessedTokens: ctx.totalProcessedTokens,
-              },
-            };
-            yield* publishTokenUsage(ctx, turn, aggregateUsage, sessionId);
-            yield* settleTurnState(ctx, turn);
-            yield* publish({
-              type: "turn.completed",
-              ...(yield* base(ctx, turn.turnId)),
-              payload: { state: "completed" },
-            });
+            yield* completeFromStream(ctx, turn, sessionId);
           }
         } else {
           const detail = stderrText.trim() || `Command Code exited with code ${exitCode}.`;
@@ -1219,6 +1259,16 @@ export function makeCommandCodeAdapter(
                 ...(yield* base(ctx, turn.turnId)),
                 payload: { reason: "Command Code turn interrupted." },
               });
+              return;
+            }
+            // Killing the CLI at the plan tears its stdout mid-stream, so the
+            // read fails here rather than reaching the exit-code branches. The
+            // plan already landed; this is still a completed turn.
+            if (turn.planStopped && ctx.resumeSessionId !== undefined) {
+              yield* completeReasoning(ctx, turn);
+              yield* completeAssistantSegment(ctx, turn);
+              yield* Deferred.succeed(resumeReady, ctx.resumeSessionId).pipe(Effect.ignore);
+              yield* completeFromStream(ctx, turn, ctx.resumeSessionId);
               return;
             }
             const error = new ProviderAdapterProcessError({
@@ -1423,6 +1473,8 @@ export function makeCommandCodeAdapter(
               interrupted: false,
               suppressTerminalState: false,
               stderrTail: "",
+              interactionMode: input.interactionMode ?? "default",
+              planStopped: false,
               startedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
               streamUsage: EMPTY_STREAM_USAGE,
               tools: new Map(),

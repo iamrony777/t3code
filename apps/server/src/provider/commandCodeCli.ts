@@ -99,6 +99,30 @@ export function parseCommandCodeModels(output: string): ReadonlyArray<CommandCod
   return models;
 }
 
+/**
+ * Tools Command Code withholds from every headless run (`HEADLESS_EXCLUDED_TOOLS`,
+ * CLI 1.19.1) that a t3 session still needs, keyed by the CLI's opt-in env var.
+ *
+ * The `--tools-enable` flag would be the documented route, but the root command
+ * takes a positional prompt, so an unknown flag plus its value becomes excess
+ * arguments on CLIs that predate it. Env vars are simply ignored there.
+ *
+ * `ask_user_question` stays withheld on purpose: the adapter has no user-input
+ * channel, so a question would strand the turn.
+ */
+export function commandCodeToolEnableEnv(
+  interactionMode: ProviderInteractionMode,
+): Readonly<Record<string, string>> {
+  return {
+    // Todo rows are a first-class part of the thread view.
+    CMD_TOOLS_TODO_WRITE_ENABLE: "1",
+    // Plan mode is pointless without the tools that end a plan.
+    ...(interactionMode === "plan"
+      ? { CMD_TOOLS_EXIT_PLAN_MODE_ENABLE: "1", CMD_TOOLS_PLAN_REVIEW_ENABLE: "1" }
+      : {}),
+  };
+}
+
 export function buildCommandCodeTurnArgs(input: {
   readonly model: string;
   readonly runtimeMode: RuntimeMode;

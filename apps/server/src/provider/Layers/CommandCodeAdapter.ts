@@ -36,6 +36,7 @@ import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpa
 
 import {
   buildCommandCodeTurnArgs,
+  commandCodeToolEnableEnv,
   type CommandCodeOutputFrame,
   parseCommandCodeNdjsonLine,
 } from "../commandCodeCli.ts";
@@ -96,6 +97,10 @@ interface TurnState {
   interrupted: boolean;
   suppressTerminalState: boolean;
   stderrTail: string;
+  startedAtMs: number;
+  // Rebuilt from the stream so a turn still reports usage when the CLI's final
+  // `result` line never arrives. See `addStreamUsage`.
+  streamUsage: StreamUsage;
   readonly tools: Map<
     string,
     {
@@ -216,6 +221,60 @@ function toolHint(
   if (parts.length === 0) return undefined;
   const hint = parts.join(": ").replace(/\s+/g, " ").trim();
   return hint.length > TOOL_HINT_LIMIT ? `${hint.slice(0, TOOL_HINT_LIMIT - 1)}…` : hint;
+}
+
+interface StreamUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+}
+
+const EMPTY_STREAM_USAGE: StreamUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
+function isParsableJson(line: string): boolean {
+  try {
+    JSON.parse(line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function usageCount(record: Record<string, unknown>, ...keys: ReadonlyArray<string>): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  }
+  return 0;
+}
+
+/**
+ * Sums `model_request_end` usage across the run, which is exactly how the CLI
+ * builds the totals it puts on its final `result` line.
+ *
+ * That line is lost whenever the CLI's preceding `run_end` — which carries the
+ * whole conversation in `result.nextState.messages` — overflows the stdout pipe
+ * buffer, because the CLI calls `process.exit` right after writing and Node
+ * discards whatever is still queued on a pipe. Rebuilding the same total from
+ * the small per-request frames keeps the context meter alive on long threads.
+ */
+function addStreamUsage(total: StreamUsage, usage: unknown): StreamUsage {
+  if (!Predicate.isObject(usage) || Array.isArray(usage)) return total;
+  const record = usage as Record<string, unknown>;
+  return {
+    inputTokens: total.inputTokens + usageCount(record, "inputTokens", "input_tokens"),
+    outputTokens: total.outputTokens + usageCount(record, "outputTokens", "output_tokens"),
+    cacheReadTokens:
+      total.cacheReadTokens + usageCount(record, "cacheReadTokens", "cache_read_tokens"),
+    cacheWriteTokens:
+      total.cacheWriteTokens + usageCount(record, "cacheWriteTokens", "cache_write_tokens"),
+  };
 }
 
 function aggregateUsageSnapshot(usage: unknown, durationMs: number) {
@@ -553,6 +612,10 @@ export function makeCommandCodeAdapter(
             }
             break;
           }
+          case "model_request_end": {
+            turn.streamUsage = addStreamUsage(turn.streamUsage, event.usage);
+            break;
+          }
           case "thinking_start": {
             turn.reasoningBlockHasDelta = false;
             if (!turn.reasoningStarted) {
@@ -813,6 +876,49 @@ export function makeCommandCodeAdapter(
         }
       });
 
+    /**
+     * Publishes the context-window snapshot for a settled turn. `aggregateUsage`
+     * must already be folded into `ctx.totalProcessedTokens`; the transcript is
+     * preferred when it is readable because it reports the live context, not the
+     * turn's own token spend.
+     */
+    const publishTokenUsage = (
+      ctx: CommandCodeSessionContext,
+      turn: TurnState,
+      aggregateUsage: ReturnType<typeof aggregateUsageSnapshot>,
+      sessionId: string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const activeUsage =
+          sessionId === undefined
+            ? undefined
+            : yield* transcriptReader.readLatestUsage({ cwd: ctx.cwd, sessionId });
+        const contextModel = activeUsage?.model ?? ctx.session.model;
+        const maxTokens =
+          contextModel === undefined
+            ? undefined
+            : yield* catalogController.getModelContextWindow(contextModel);
+        yield* publish({
+          type: "thread.token-usage.updated",
+          ...(yield* base(ctx, turn.turnId)),
+          payload: {
+            usage:
+              activeUsage === undefined
+                ? {
+                    ...aggregateUsage,
+                    totalProcessedTokens: ctx.totalProcessedTokens,
+                    ...(maxTokens !== undefined ? { maxTokens } : {}),
+                  }
+                : activeUsageSnapshot(
+                    activeUsage,
+                    aggregateUsage.durationMs,
+                    ctx.totalProcessedTokens,
+                    maxTokens,
+                  ),
+          },
+        });
+      });
+
     const handleResult = (
       ctx: CommandCodeSessionContext,
       turn: TurnState,
@@ -864,37 +970,7 @@ export function makeCommandCodeAdapter(
         }
         yield* completeReasoning(ctx, turn);
         yield* completeAssistantSegment(ctx, turn);
-        const activeUsage =
-          resumeSessionId === undefined
-            ? undefined
-            : yield* transcriptReader.readLatestUsage({
-                cwd: ctx.cwd,
-                sessionId: resumeSessionId,
-              });
-        const contextModel = activeUsage?.model ?? ctx.session.model;
-        const maxTokens =
-          contextModel === undefined
-            ? undefined
-            : yield* catalogController.getModelContextWindow(contextModel);
-        yield* publish({
-          type: "thread.token-usage.updated",
-          ...(yield* base(ctx, turn.turnId)),
-          payload: {
-            usage:
-              activeUsage === undefined
-                ? {
-                    ...aggregateUsage,
-                    totalProcessedTokens: ctx.totalProcessedTokens,
-                    ...(maxTokens !== undefined ? { maxTokens } : {}),
-                  }
-                : activeUsageSnapshot(
-                    activeUsage,
-                    result.durationMs,
-                    ctx.totalProcessedTokens,
-                    maxTokens,
-                  ),
-          },
-        });
+        yield* publishTokenUsage(ctx, turn, aggregateUsage, resumeSessionId);
         yield* settleTurnState(ctx, turn);
         yield* publish({
           type: "turn.completed",
@@ -930,11 +1006,15 @@ export function makeCommandCodeAdapter(
           ...(settings.launchArgs ? { launchArgs: settings.launchArgs } : {}),
         });
         const binaryPath = settings.binaryPath || "command-code";
+        const turnEnvironment = {
+          ...environment,
+          ...commandCodeToolEnableEnv(interactionMode),
+        };
         const spawnCommand = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
         const child = yield* spawner.spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             cwd: ctx.cwd,
-            env: environment,
+            env: turnEnvironment,
             shell: spawnCommand.shell,
             detached: platform !== "win32",
             stdin: { stream: Stream.encodeText(Stream.make(prompt)) },
@@ -946,6 +1026,16 @@ export function makeCommandCodeAdapter(
         const consumeLine = (line: string) => {
           const frame = parseCommandCodeNdjsonLine(line);
           if (!frame) {
+            // Half a JSON object is the CLI cutting its own stdout off at exit,
+            // not a protocol change. It is expected on long threads (see
+            // `addStreamUsage`) and nothing the user can act on, so it stays in
+            // the server log instead of the thread.
+            if (!isParsableJson(line)) {
+              return Effect.logDebug("Command Code stdout line was cut short.", {
+                threadId: ctx.threadId,
+                bytes: line.length,
+              });
+            }
             return base(ctx, turn.turnId).pipe(
               Effect.flatMap((eventBase) =>
                 publish({
@@ -1025,6 +1115,25 @@ export function makeCommandCodeAdapter(
             });
           } else {
             yield* Deferred.succeed(resumeReady, sessionId).pipe(Effect.ignore);
+            // The result frame is the usual carrier for usage, and it is the
+            // frame most likely to be lost to the CLI's exit-time stdout
+            // truncation. Fall back to the totals rebuilt from the stream so the
+            // context meter keeps a reading instead of disappearing.
+            const elapsedMs = Math.max(
+              0,
+              DateTime.toEpochMillis(yield* DateTime.now) - turn.startedAtMs,
+            );
+            const aggregateUsage = aggregateUsageSnapshot(turn.streamUsage, elapsedMs);
+            ctx.totalProcessedTokens += aggregateUsage.usedTokens;
+            ctx.session = {
+              ...ctx.session,
+              resumeCursor: {
+                schemaVersion: RESUME_VERSION,
+                sessionId,
+                totalProcessedTokens: ctx.totalProcessedTokens,
+              },
+            };
+            yield* publishTokenUsage(ctx, turn, aggregateUsage, sessionId);
             yield* settleTurnState(ctx, turn);
             yield* publish({
               type: "turn.completed",
@@ -1264,6 +1373,8 @@ export function makeCommandCodeAdapter(
               interrupted: false,
               suppressTerminalState: false,
               stderrTail: "",
+              startedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+              streamUsage: EMPTY_STREAM_USAGE,
               tools: new Map(),
               tasks: new Set(),
             };
@@ -1294,6 +1405,9 @@ export function makeCommandCodeAdapter(
               const settled = yield* Deferred.make<void>();
               turn.suppressTerminalState = false;
               turn.stderrTail = "";
+              // A retry re-runs the whole turn, so usage restarts with it.
+              turn.startedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+              turn.streamUsage = EMPTY_STREAM_USAGE;
               ctx.activeFiber = yield* runTurn(
                 ctx,
                 turn,

@@ -71,6 +71,8 @@ const nativeUsageLine = (input: {
     },
   });
 
+const eventLine = (event: Record<string, unknown>) => JSON.stringify({ type: "event", event });
+
 const resultFrame = (
   sessionId: string,
   usage: {
@@ -1575,6 +1577,75 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           outputTokens: 5,
         });
         expect(usage).not.toHaveProperty("maxTokens");
+      }),
+    ),
+  );
+
+  it.effect("reports usage when the CLI exits 0 without ever emitting a result frame", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-truncated-" });
+        const binaryPath = path.join(dir, "command-code");
+        const sessionId = "session-truncated";
+        // The CLI writes its oversized `run_end` line, then the result line,
+        // then exits — and a full pipe drops both. What survives is the small
+        // per-request frames plus exit 0.
+        const printLine = (frame: string) => `printf '%s\\n' '${frame}'`;
+        const requestEnd = (usage: Record<string, number>) =>
+          eventLine({ type: "model_request_end", usage });
+        yield* fs
+          .writeFileString(
+            binaryPath,
+            [
+              "#!/bin/sh",
+              "cat >/dev/null",
+              printLine(eventLine({ type: "run_start", sessionId })),
+              printLine(
+                requestEnd({
+                  inputTokens: 10,
+                  outputTokens: 2,
+                  cacheReadTokens: 3,
+                  cacheWriteTokens: 4,
+                }),
+              ),
+              printLine(requestEnd({ inputTokens: 20, outputTokens: 1 })),
+              "exit 0",
+            ].join("\n"),
+          )
+          .pipe(Effect.andThen(fs.chmod(binaryPath, 0o755)));
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator({}, { "model/known": 100_000 }),
+          environment: { HOME: path.join(dir, "home"), PATH: process.env.PATH },
+        });
+        const threadId = ThreadId.make("thread-command-code-truncated");
+        const usageFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+          modelSelection: { instanceId, model: "model/known", options: [] },
+        });
+        const turn = yield* adapter.sendTurn({ threadId, input: "truncated" });
+        expect(eventUsage(Option.getOrThrow(yield* Fiber.join(usageFiber)))).toMatchObject({
+          usedTokens: 40,
+          totalProcessedTokens: 40,
+          maxTokens: 100_000,
+          inputTokens: 30,
+          cachedInputTokens: 3,
+          outputTokens: 3,
+        });
+        expect(turn.threadId).toBe(threadId);
       }),
     ),
   );

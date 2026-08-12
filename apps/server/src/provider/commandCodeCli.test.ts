@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildCommandCodeTurnArgs,
+  commandCodeToolEnableEnv,
   parseCommandCodeModels,
   parseCommandCodeNdjsonLine,
   parseCommandCodeStatus,
@@ -91,6 +92,26 @@ describe("parseCommandCodeModels", () => {
         subProvider: "OpenAI",
       },
     ]);
+  });
+});
+
+describe("commandCodeToolEnableEnv", () => {
+  it("restores todo writing on every headless turn", () => {
+    expect(commandCodeToolEnableEnv("default")).toEqual({ CMD_TOOLS_TODO_WRITE_ENABLE: "1" });
+  });
+
+  it("restores the plan-exit tools only for plan turns", () => {
+    expect(commandCodeToolEnableEnv("plan")).toEqual({
+      CMD_TOOLS_TODO_WRITE_ENABLE: "1",
+      CMD_TOOLS_EXIT_PLAN_MODE_ENABLE: "1",
+      CMD_TOOLS_PLAN_REVIEW_ENABLE: "1",
+    });
+  });
+
+  it("leaves ask_user_question withheld, since the adapter cannot answer it", () => {
+    expect(Object.keys(commandCodeToolEnableEnv("plan"))).not.toContain(
+      "CMD_TOOLS_ASK_USER_QUESTION_ENABLE",
+    );
   });
 });
 

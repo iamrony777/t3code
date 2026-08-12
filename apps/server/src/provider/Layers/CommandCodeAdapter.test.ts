@@ -1649,6 +1649,60 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
+  it.effect("surfaces an exit_plan_mode plan as a proposal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-exit-plan-" });
+        const binaryPath = path.join(dir, "command-code");
+        const exitPlan = {
+          type: "tool_queued",
+          toolCallId: "tool-plan",
+          toolName: "exit_plan_mode",
+          input: { plan: "## Plan\n\n1. Rename the variable\n" },
+        };
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            "cat >/dev/null",
+            `printf '%s\\n' '${eventLine({ type: "run_start", sessionId: "session-plan" })}'`,
+            `printf '%s\\n' '${eventLine(exitPlan)}'`,
+            `printf '%s\\n' '${resultFrame("session-plan", { inputTokens: 1, outputTokens: 1 })}'`,
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: { HOME: path.join(dir, "home"), PATH: process.env.PATH },
+        });
+        const threadId = ThreadId.make("thread-command-code-exit-plan");
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "plan it", interactionMode: "plan" });
+        const events = yield* Fiber.join(eventsFiber);
+        const proposed = events.find((event) => event.type === "turn.proposed.completed");
+        expect(
+          proposed?.type === "turn.proposed.completed" ? proposed.payload.planMarkdown : undefined,
+        ).toBe("## Plan\n\n1. Rename the variable");
+      }),
+    ),
+  );
+
   it.effect("reports usage when the CLI exits 0 without ever emitting a result frame", () =>
     Effect.scoped(
       Effect.gen(function* () {

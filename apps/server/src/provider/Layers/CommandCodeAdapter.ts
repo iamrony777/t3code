@@ -713,13 +713,28 @@ export function makeCommandCodeAdapter(
             // Todos drive the plan panel here as they do for the other
             // providers, instead of reading as a tool row full of raw JSON.
             const toolName = eventString(event, "toolName", "tool_name");
-            if (toolName?.toLowerCase().includes("todo")) {
+            const normalizedToolName = toolName?.toLowerCase();
+            if (normalizedToolName?.includes("todo")) {
               const plan = planStepsFromTodoInput(toolInputRecord(event));
               if (plan.length > 0) {
                 yield* publish({
                   type: "turn.plan.updated",
                   ...(yield* base(ctx, turn.turnId, event)),
                   payload: { plan },
+                });
+              }
+            }
+            // `exit_plan_mode` is how Command Code presents a finished plan, so
+            // it becomes a plan proposal like Claude's `ExitPlanMode`. Headless
+            // runs cannot write the plan file the CLI would otherwise prefer,
+            // which leaves the inline `plan` argument as the only copy.
+            if (normalizedToolName === "exit_plan_mode") {
+              const planMarkdown = toolInputRecord(event)?.plan;
+              if (typeof planMarkdown === "string" && planMarkdown.trim().length > 0) {
+                yield* publish({
+                  type: "turn.proposed.completed",
+                  ...(yield* base(ctx, turn.turnId, event)),
+                  payload: { planMarkdown: planMarkdown.trim() },
                 });
               }
             }

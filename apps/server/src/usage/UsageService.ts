@@ -1,5 +1,5 @@
 /**
- * UsageService - scans provider transcripts and returns priced daily usage.
+ * UsageService - scans provider transcripts and returns priced usage buckets.
  *
  * The scan reads the provider CLIs' own session files rather than T3 Code's
  * orchestration projections, so usage covers turns driven outside T3 Code too.
@@ -16,7 +16,6 @@ import * as NodeOS from "node:os";
 import {
   USAGE_CONTRACT_VERSION,
   type ProviderInstanceConfigMap,
-  type UsageProviderKind,
   type UsageSource,
   type UsageSummary,
   type UsageSummaryInput,
@@ -54,7 +53,11 @@ import {
   pruneScanCache,
   type ScanCache,
 } from "./usageScanCache.ts";
-import type { UsageRecord } from "./usageTranscripts.ts";
+import {
+  isReportedProvider,
+  type UsageRecord,
+  type UsageScanProvider,
+} from "./usageTranscripts.ts";
 
 const LITELLM_RATES_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -67,6 +70,7 @@ const RATES_TTL_MS = 24 * 60 * 60 * 1000;
  * last write lands just before local midnight on the window's first day.
  */
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
+const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
@@ -251,7 +255,7 @@ export const make = Effect.gen(function* () {
     const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
 
-    const dirs: Array<{ provider: UsageProviderKind; dir: string }> = [
+    const dirs: Array<{ provider: UsageScanProvider; dir: string }> = [
       { provider: "claude", dir: claudeDir },
       { provider: "codex", dir: path.join(codexLayout.sharedHomePath, "sessions") },
     ];
@@ -300,7 +304,7 @@ export const make = Effect.gen(function* () {
     filePath: string,
     size: number,
     mtimeMs: number,
-    provider: UsageProviderKind,
+    provider: UsageScanProvider,
   ): Effect.Effect<readonly UsageRecord[]> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
@@ -336,6 +340,30 @@ export const make = Effect.gen(function* () {
       });
     }
 
+    let hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
+    if (input.resolution === "hour") {
+      const sinceTime =
+        input.sinceTime === undefined ? Option.none() : DateTime.make(input.sinceTime);
+      const untilTime =
+        input.untilTime === undefined ? Option.none() : DateTime.make(input.untilTime);
+      if (Option.isNone(sinceTime) || Option.isNone(untilTime)) {
+        return yield* new UsageReadError({
+          reason: "invalidWindow",
+          detail: "Hourly usage requires valid sinceTime and untilTime instants",
+        });
+      }
+      const sinceTimeMs = DateTime.toEpochMillis(sinceTime.value);
+      const untilTimeMs = DateTime.toEpochMillis(untilTime.value);
+      const durationMs = untilTimeMs - sinceTimeMs;
+      if (durationMs <= 0 || durationMs > MAX_HOURLY_WINDOW_MS) {
+        return yield* new UsageReadError({
+          reason: "invalidWindow",
+          detail: "Hourly usage window must be greater than zero and at most 24 hours",
+        });
+      }
+      hourlyWindow = { sinceTimeMs, untilTimeMs };
+    }
+
     const startedAtMs = yield* Clock.currentTimeMillis;
     yield* ensureRates();
     yield* ensureScanCacheLoaded;
@@ -351,12 +379,15 @@ export const make = Effect.gen(function* () {
         detail: `sinceDay '${input.sinceDay}' is not a valid date`,
       });
     }
-    const windowStartMs = DateTime.toEpochMillis(windowStart.value) - MTIME_SLACK_MS;
+    const windowStartMs =
+      (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
     const aggregator = new UsageAggregator({
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
+      resolution: input.resolution ?? "day",
+      ...hourlyWindow,
       rates,
     });
 
@@ -365,12 +396,17 @@ export const make = Effect.gen(function* () {
     const walkedRoots: string[] = [];
 
     for (const { provider, dir } of dirs) {
+      // Unreported providers are still scanned — their records price and cache
+      // like any other — but they contribute no diagnostics row, because the
+      // contract's fingerprint cannot name them.
+      const reported = isReportedProvider(provider);
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
 
       if (!exists) {
+        if (!reported) continue;
         sources.push({
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
           status: "missing",
@@ -408,6 +444,7 @@ export const make = Effect.gen(function* () {
         }
       }
 
+      if (!reported) continue;
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
         status: "ok",
@@ -438,7 +475,9 @@ export const make = Effect.gen(function* () {
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
-      buckets: aggregated.buckets,
+      // Command Code buckets never reach the wire: its literal is not in the
+      // usage contract, so encoding one would fail the whole summary.
+      buckets: aggregated.buckets.filter((bucket) => isReportedProvider(bucket.provider)),
       sources,
       pricing: {
         status: ratesStatus,

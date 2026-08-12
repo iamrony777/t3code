@@ -2,12 +2,16 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, InteractionManager, Platform, View, useColorScheme } from "react-native";
-import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
+import {
+  KeyboardAvoidingView,
+  KeyboardStickyView,
+  useKeyboardState,
+} from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import { EnvironmentId, type ProviderGlobalOption } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -26,7 +30,6 @@ import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ComposerSurface } from "./ThreadComposer";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
-import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -50,8 +53,6 @@ import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { useCreateProjectThread } from "./use-project-actions";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
-
-const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
 function formatWorkspaceLabel(input: {
   readonly workspaceMode: string;
@@ -93,9 +94,6 @@ export function NewTaskDraftScreen(props: {
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   const { connectedEnvironments } = useRemoteConnectionStatus();
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
-    selectedProject?.environmentId ?? null,
-  );
-  const handleSetProviderGlobalOption = useSetProviderGlobalOption(
     selectedProject?.environmentId ?? null,
   );
   const environmentConnected =
@@ -571,13 +569,6 @@ export function NewTaskDraftScreen(props: {
       }),
     [flow.selectedModel?.options, flow.selectedModelOption?.capabilities],
   );
-  const selectedProviderStatus = useMemo(
-    () =>
-      selectedEnvironmentServerConfig?.providers.find(
-        (provider) => provider.instanceId === flow.selectedModel?.instanceId,
-      ) ?? null,
-    [selectedEnvironmentServerConfig, flow.selectedModel?.instanceId],
-  );
 
   const workspaceMenuActions = useMemo(() => {
     const branchActions =
@@ -976,9 +967,6 @@ export function NewTaskDraftScreen(props: {
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       optionDescriptors={providerOptionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
-      environmentId={selectedProject.environmentId}
-      globalOptions={selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS}
-      onSetGlobalOption={handleSetProviderGlobalOption}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
     />
@@ -1001,14 +989,29 @@ export function NewTaskDraftScreen(props: {
     // The draft is a thread that doesn't exist yet, so it mirrors the thread
     // page: in-screen header, empty feed canvas above, and the same floating
     // composer chrome as ThreadComposer (collapsed pill → expanded card).
+    //
+    // Composer positioning mirrors ThreadDetailScreen's floating overlay
+    // (KeyboardStickyView, absolute bottom overlay) rather than
+    // KeyboardAvoidingView's automaticOffset+padding: automaticOffset
+    // resolves the composer's on-screen frame via a native
+    // viewPositionInWindow measurement, which this app's Android
+    // edge-to-edge setup (KeyboardProvider's native content-view margin
+    // handling neutralizes windowSoftInputMode="adjustResize" while active)
+    // makes unreliable — the composer stayed under the keyboard instead of
+    // translating above it. KeyboardStickyView sticks directly to the
+    // animated keyboard height instead, sidestepping that measurement.
     return (
       <View className="flex-1 bg-screen">
         <NativeStackScreenOptions options={{ headerShown: false }} />
         <AndroidScreenHeader title="New Thread" onBack={() => navigation.goBack()} />
 
-        <KeyboardAvoidingView automaticOffset behavior="padding" className="flex-1">
-          <View className="flex-1" />
+        <View className="flex-1" />
 
+        <KeyboardStickyView
+          enabled={isKeyboardVisible}
+          style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
+          offset={{ closed: 0, opened: 0 }}
+        >
           <View
             className="px-4 pt-2"
             style={{
@@ -1072,7 +1075,7 @@ export function NewTaskDraftScreen(props: {
               </ComposerToolbarRow>
             ) : null}
           </View>
-        </KeyboardAvoidingView>
+        </KeyboardStickyView>
         {settingsSheet}
       </View>
     );

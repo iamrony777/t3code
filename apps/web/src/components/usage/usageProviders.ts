@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, CommandCodeIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, type Icon, OpenAI } from "../Icons";
 
 /**
  * Series and table order. The chart layers every provider from a shared zero
@@ -12,11 +12,7 @@ import { ClaudeAI, CommandCodeIcon, type Icon, OpenAI } from "../Icons";
  * legend and table, and the plain `UsageProviderKind[]` annotation this used to
  * carry made that a silent omission.
  */
-export const PROVIDER_ORDER = [
-  "codex",
-  "claude",
-  "commandcode",
-] as const satisfies readonly UsageProviderKind[];
+export const PROVIDER_ORDER = ["codex", "claude"] as const satisfies readonly UsageProviderKind[];
 
 /**
  * Providers worth rendering for the data on screen, in {@link PROVIDER_ORDER}.
@@ -36,14 +32,12 @@ export function visibleProviders(
 export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  commandcode: "Command Code",
 };
 
 /** Claude's brand orange against a neutral white for Codex. */
 export const PROVIDER_COLOR: Record<UsageProviderKind, string> = {
   claude: "#d97757",
   codex: "#e6e6e6",
-  commandcode: "#a78bfa",
 };
 
 /**
@@ -56,5 +50,4 @@ export const PROVIDER_COLOR: Record<UsageProviderKind, string> = {
 export const PROVIDER_MARK: Record<UsageProviderKind, Icon> = {
   claude: ClaudeAI,
   codex: OpenAI,
-  commandcode: CommandCodeIcon,
 };

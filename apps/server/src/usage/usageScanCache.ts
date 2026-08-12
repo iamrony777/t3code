@@ -17,10 +17,17 @@
 import { UsageProviderKind } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import type { UsageRecord } from "./usageTranscripts.ts";
+import type { UsageRecord, UsageScanProvider } from "./usageTranscripts.ts";
 
 /** Derived from the contract so adding or removing a provider cannot drift. */
-const isUsageProviderKind = Schema.is(UsageProviderKind);
+const isContractProvider = Schema.is(UsageProviderKind);
+
+/**
+ * The cache holds every provider the scanner parses, not just the ones the
+ * contract reports, so Command Code entries survive a restart too.
+ */
+const isUsageScanProvider = (value: unknown): value is UsageScanProvider =>
+  isContractProvider(value) || value === "commandcode";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
@@ -29,7 +36,7 @@ export const USAGE_SCAN_CACHE_VERSION = 2 as const;
 export interface CachedFile {
   readonly size: number;
   readonly mtimeMs: number;
-  readonly provider: UsageProviderKind;
+  readonly provider: UsageScanProvider;
   readonly records: readonly UsageRecord[];
 }
 
@@ -56,7 +63,7 @@ type SerializedRecord = readonly [
 interface SerializedFile {
   readonly s: number;
   readonly m: number;
-  readonly p: UsageProviderKind;
+  readonly p: UsageScanProvider;
   readonly r: readonly SerializedRecord[];
 }
 
@@ -138,10 +145,10 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (!isUsageProviderKind(entry.p)) continue;
+    if (!isUsageScanProvider(entry.p)) continue;
     if (!isRecordArray(entry.r)) continue;
 
-    const provider: UsageProviderKind = entry.p;
+    const provider: UsageScanProvider = entry.p;
     const records: UsageRecord[] = [];
     // Any corrupt row disqualifies the whole entry. Keeping the survivors
     // under the original (size, mtime) would read as a valid warm hit and the

@@ -15,8 +15,6 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
-import type { UsageProviderKind } from "@t3tools/contracts";
-
 import {
   initialCodexScanState,
   mightCarryUsage,
@@ -24,6 +22,7 @@ import {
   parseCodexLine,
   parseCommandCodeLine,
   type UsageRecord,
+  type UsageScanProvider,
 } from "./usageTranscripts.ts";
 
 export interface TranscriptFile {
@@ -43,7 +42,7 @@ export interface TranscriptFile {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  provider: UsageProviderKind,
+  provider: UsageScanProvider,
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
 
@@ -111,7 +110,7 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
  */
 export async function readTranscriptRecords(
   filePath: string,
-  provider: UsageProviderKind,
+  provider: UsageScanProvider,
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();

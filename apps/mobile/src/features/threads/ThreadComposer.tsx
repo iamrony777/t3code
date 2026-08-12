@@ -4,7 +4,6 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
-  ProviderGlobalOption,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
@@ -15,6 +14,7 @@ import {
   serializeComposerFileLink,
   type ComposerTrigger,
 } from "@t3tools/shared/composerTrigger";
+import * as Haptics from "expo-haptics";
 import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -52,7 +52,7 @@ import {
   ComposerToolbarScroller,
   ComposerToolbarTrigger,
 } from "../../components/ComposerToolbarTrigger";
-import { ControlPill } from "../../components/ControlPill";
+import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
@@ -63,14 +63,15 @@ import {
   normalizeSearchQuery,
   scoreQueryMatch,
 } from "@t3tools/shared/searchRanking";
-import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
+import {
+  applyProviderOptionSelection,
+  resolveProviderOptionDescriptors,
+} from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
-import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
-
-const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -117,6 +118,8 @@ export interface ThreadComposerProps {
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onReconnectEnvironment: () => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
+  /** Fires on editor focus/blur; hosts use it to vet stale keyboard state. */
+  readonly onEditorFocusChange?: (focused: boolean) => void;
 }
 
 /**
@@ -278,7 +281,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     editorRef: inputRef,
     isEditorFocused: isFocused,
   });
-  const handleSetProviderGlobalOption = useSetProviderGlobalOption(props.environmentId);
   const wasExpandedBeforePreviewRef = useRef(false);
   const inFlightThreadIdsRef = useRef(new Set<string>());
   const { onExpandedChange } = props;
@@ -312,13 +314,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }, [inputRef]);
 
+  const onEditorFocusChange = props.onEditorFocusChange;
   const handleFocus = useCallback(() => {
     setIsFocused(true);
-  }, []);
+    onEditorFocusChange?.(true);
+  }, [onEditorFocusChange]);
 
   const handleBlur = useCallback(() => {
     setIsFocused(false);
-  }, []);
+    onEditorFocusChange?.(false);
+  }, [onEditorFocusChange]);
   const showStopAction =
     props.selectedThread.session?.status === "running" ||
     props.selectedThread.session?.status === "starting";
@@ -628,6 +633,61 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     interactionMode: currentInteractionMode,
   });
 
+  // iOS gets a native menu on the trigger pill: the everyday adjustments
+  // apply without resigning the keyboard, while "All Settings…" (and the
+  // Android trigger) still route through the sheet, which must dismiss it.
+  const settingsMenu = useMemo(
+    () =>
+      Platform.OS === "ios"
+        ? buildThreadSettingsMenu({
+            providerGroups: threadProviderGroups,
+            selectedModel: currentModelSelection,
+            optionDescriptors: providerOptionDescriptors,
+            runtimeMode: currentRuntimeMode,
+          })
+        : null,
+    [threadProviderGroups, currentModelSelection, providerOptionDescriptors, currentRuntimeMode],
+  );
+
+  const onUpdateModelSelection = props.onUpdateModelSelection;
+  const onUpdateRuntimeMode = props.onUpdateRuntimeMode;
+  const handleSettingsMenuAction = useCallback(
+    (eventId: string) => {
+      const event = settingsMenu?.events.get(eventId);
+      if (!event) {
+        return;
+      }
+      switch (event.type) {
+        case "select-model":
+          void Haptics.selectionAsync();
+          onUpdateModelSelection(event.option.selection);
+          return;
+        case "set-option": {
+          const options = applyProviderOptionSelection(providerOptionDescriptors, {
+            id: event.optionId,
+            value: event.value,
+          });
+          if (options) {
+            void Haptics.selectionAsync();
+            onUpdateModelSelection({ ...currentModelSelection, options });
+          }
+          return;
+        }
+        case "set-runtime":
+          void Haptics.selectionAsync();
+          onUpdateRuntimeMode(event.mode);
+          return;
+      }
+    },
+    [
+      currentModelSelection,
+      onUpdateModelSelection,
+      onUpdateRuntimeMode,
+      providerOptionDescriptors,
+      settingsMenu,
+    ],
+  );
+
   return (
     <Animated.View
       className="px-4"
@@ -797,15 +857,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
-                <ComposerToolbarTrigger
-                  accessibilityLabel="Thread settings"
-                  iconNode={
-                    <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
-                  }
-                  label={settingsSummaryLabel}
-                  maxWidth={320}
-                  onPress={settingsSheetPresentation.open}
-                />
+                {settingsMenu ? (
+                  <ControlPillMenu
+                    actions={settingsMenu.actions}
+                    onPressAction={({ nativeEvent }) => handleSettingsMenuAction(nativeEvent.event)}
+                  >
+                    <ComposerToolbarTrigger
+                      accessibilityLabel="Thread settings"
+                      iconNode={
+                        <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                      }
+                      label={settingsSummaryLabel}
+                      maxWidth={320}
+                    />
+                  </ControlPillMenu>
+                ) : (
+                  <ComposerToolbarTrigger
+                    accessibilityLabel="Thread settings"
+                    iconNode={
+                      <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                    }
+                    label={settingsSummaryLabel}
+                    maxWidth={320}
+                    onPress={settingsSheetPresentation.open}
+                  />
+                )}
                 {showStopAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"
@@ -850,9 +926,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         onUpdateOptionSelections={(options) =>
           props.onUpdateModelSelection({ ...currentModelSelection, options })
         }
-        environmentId={props.environmentId}
-        globalOptions={selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS}
-        onSetGlobalOption={handleSetProviderGlobalOption}
         runtimeMode={currentRuntimeMode}
         onUpdateRuntimeMode={props.onUpdateRuntimeMode}
       />

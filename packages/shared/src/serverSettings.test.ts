@@ -256,6 +256,7 @@ describe("serverSettings helpers", () => {
       models: [],
       slashCommands: [],
       skills: [],
+      globalOptions: [],
     } satisfies ServerProvider;
 
     expect(resolveSourceControlWriterModelSelection(settings, [unavailableProvider])).toBe(

@@ -2,7 +2,6 @@ import { Chart, Host, type ChartDataPoint } from "@expo/ui/swift-ui";
 import { frame } from "@expo/ui/swift-ui/modifiers";
 import { useMemo } from "react";
 
-import type { UsageProviderKind } from "@t3tools/contracts";
 import type { DailyTotals } from "@t3tools/shared/usageMerge";
 
 import { buildChartDays, type UsageChartMetric } from "./usageChartData";
@@ -12,8 +11,6 @@ export interface UsageDailyChartProps {
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
   readonly metric: UsageChartMetric;
-  /** Bands to stack, bottom first. See `visibleProviders`. */
-  readonly providers: readonly UsageProviderKind[];
   readonly height: number;
 }
 
@@ -25,18 +22,18 @@ export interface UsageDailyChartProps {
  * Axes are hidden: 30-90 categorical day labels cannot fit on a phone, so the
  * screen renders its own edge labels under the chart instead.
  */
-export function UsageDailyChart({ days, daily, metric, providers, height }: UsageDailyChartProps) {
+export function UsageDailyChart({ days, daily, metric, height }: UsageDailyChartProps) {
   const colors = useProviderColors();
 
   const data = useMemo((): ChartDataPoint[] => {
-    return buildChartDays(days, daily, metric, providers).flatMap((day) =>
+    return buildChartDays(days, daily, metric).flatMap((day) =>
       day.values.map((entry) => ({
         x: day.day,
         y: entry.value,
         color: colors[entry.provider],
       })),
     );
-  }, [days, daily, metric, providers, colors]);
+  }, [days, daily, metric, colors]);
 
   return (
     <Host style={{ height, width: "100%" }}>

@@ -14,11 +14,15 @@ describe("PROVIDER_ORDER", () => {
 });
 
 describe("visibleProviders", () => {
-  it("keeps reading order and drops providers with no data", () => {
-    expect(visibleProviders([{ provider: "claude" }, { provider: "commandcode" }])).toEqual([
+  it("keeps reading order rather than the order reported", () => {
+    expect(visibleProviders([{ provider: "claude" }, { provider: "codex" }])).toEqual([
+      "codex",
       "claude",
-      "commandcode",
     ]);
+  });
+
+  it("drops providers with no data", () => {
+    expect(visibleProviders([{ provider: "claude" }])).toEqual(["claude"]);
   });
 
   it("falls back to the full order when nothing reported", () => {

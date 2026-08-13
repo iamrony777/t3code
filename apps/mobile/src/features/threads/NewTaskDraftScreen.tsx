@@ -11,7 +11,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ProviderGlobalOption } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -30,6 +30,7 @@ import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ComposerSurface } from "./ThreadComposer";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
+import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -53,6 +54,8 @@ import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { useCreateProjectThread } from "./use-project-actions";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
+
+const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
 function formatWorkspaceLabel(input: {
   readonly workspaceMode: string;
@@ -94,6 +97,9 @@ export function NewTaskDraftScreen(props: {
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   const { connectedEnvironments } = useRemoteConnectionStatus();
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
+    selectedProject?.environmentId ?? null,
+  );
+  const handleSetProviderGlobalOption = useSetProviderGlobalOption(
     selectedProject?.environmentId ?? null,
   );
   const environmentConnected =
@@ -569,6 +575,13 @@ export function NewTaskDraftScreen(props: {
       }),
     [flow.selectedModel?.options, flow.selectedModelOption?.capabilities],
   );
+  const selectedProviderStatus = useMemo(
+    () =>
+      selectedEnvironmentServerConfig?.providers.find(
+        (provider) => provider.instanceId === flow.selectedModel?.instanceId,
+      ) ?? null,
+    [selectedEnvironmentServerConfig, flow.selectedModel?.instanceId],
+  );
 
   const workspaceMenuActions = useMemo(() => {
     const branchActions =
@@ -967,6 +980,9 @@ export function NewTaskDraftScreen(props: {
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       optionDescriptors={providerOptionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
+      environmentId={selectedProject.environmentId}
+      globalOptions={selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS}
+      onSetGlobalOption={handleSetProviderGlobalOption}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
     />

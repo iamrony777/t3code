@@ -4,6 +4,7 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
+  ProviderGlobalOption,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
@@ -71,7 +72,10 @@ import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
+import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
+
+const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -281,6 +285,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     editorRef: inputRef,
     isEditorFocused: isFocused,
   });
+  const handleSetProviderGlobalOption = useSetProviderGlobalOption(props.environmentId);
   const wasExpandedBeforePreviewRef = useRef(false);
   const inFlightThreadIdsRef = useRef(new Set<string>());
   const { onExpandedChange } = props;
@@ -926,6 +931,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         onUpdateOptionSelections={(options) =>
           props.onUpdateModelSelection({ ...currentModelSelection, options })
         }
+        environmentId={props.environmentId}
+        globalOptions={selectedProviderStatus?.globalOptions ?? EMPTY_PROVIDER_GLOBAL_OPTIONS}
+        onSetGlobalOption={handleSetProviderGlobalOption}
         runtimeMode={currentRuntimeMode}
         onUpdateRuntimeMode={props.onUpdateRuntimeMode}
       />

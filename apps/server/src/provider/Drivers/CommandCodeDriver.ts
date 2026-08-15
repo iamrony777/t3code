@@ -303,7 +303,17 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         catalogController,
         environment: processEnv,
         attachmentsDir,
-      });
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: cause.message ?? String(cause),
+              cause,
+            }),
+        ),
+      );
       const textGeneration = yield* makeCommandCodeTextGeneration(
         effectiveConfig,
         catalogController,

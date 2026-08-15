@@ -22,6 +22,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { CommandCodeEffortCapability } from "../commandCodeCatalog.ts";
+import { COMMAND_CODE_COMPACT_PROMPT } from "../commandCodeCompactMod.ts";
 import { commandCodeProjectSlugCandidate } from "../commandCodeTranscript.ts";
 import {
   type CommandCodeAdapterCatalogController,
@@ -341,6 +342,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
         const argumentLines = (yield* fs.readFileString(argsLog)).trim().split("\n");
         expect(argumentLines[0]).toContain("--permission-mode dont-ask");
         expect(argumentLines[0]?.match(/--effort max/g)).toHaveLength(1);
+        expect(argumentLines[0]).toContain("--mod");
         expect(argumentLines[1]).toContain("--resume session-123");
         expect(argumentLines[1]?.match(/--effort max/g)).toHaveLength(1);
         expect(argumentLines[1]).not.toContain("--continue");
@@ -348,6 +350,60 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           "first prompt",
           "second prompt",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("rewrites a standalone /compact and loads the compact mod", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-compact-" });
+        const binaryPath = path.join(dir, "command-code");
+        const argsLog = path.join(dir, "args.log");
+        const stdinLog = path.join(dir, "stdin.log");
+        yield* fs.writeFileString(
+          binaryPath,
+          [
+            "#!/bin/sh",
+            'printf \'%s\\n\' "$*" >> "$COMMAND_CODE_ARGS_LOG"',
+            "prompt=$(cat)",
+            'printf \'%s\\n\' "$prompt" >> "$COMMAND_CODE_STDIN_LOG"',
+            'printf \'%s\\n\' \'{"type":"event","event":{"type":"run_start","sessionId":"session-compact"}}\'',
+            'printf \'%s\\n\' \'{"type":"result","subtype":"success","sessionId":"session-compact","usage":{},"durationMs":1,"finalText":"compacted"}\'',
+          ].join("\n"),
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {
+          instanceId,
+          catalogController: effortValidator(),
+          environment: {
+            ...process.env,
+            COMMAND_CODE_ARGS_LOG: argsLog,
+            COMMAND_CODE_STDIN_LOG: stdinLog,
+          },
+        });
+        const threadId = ThreadId.make("thread-command-code-compact");
+        const completionFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.startSession({
+          provider,
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: dir,
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({ threadId, input: "/compact" });
+        yield* Fiber.join(completionFiber);
+
+        expect((yield* fs.readFileString(stdinLog)).trim()).toBe(COMMAND_CODE_COMPACT_PROMPT);
+        expect((yield* fs.readFileString(argsLog)).trim()).toContain("--mod");
       }),
     ),
   );

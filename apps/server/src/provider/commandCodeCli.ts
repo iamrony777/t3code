@@ -132,6 +132,7 @@ export function buildCommandCodeTurnArgs(input: {
   readonly attachmentsDir?: string | undefined;
   readonly enableImageVision?: boolean | undefined;
   readonly launchArgs?: string | undefined;
+  readonly compactModPath?: string | undefined;
 }): ReadonlyArray<string> {
   const launchArgv = tokenizeCliArgs(input.launchArgs);
   // Vision is opt-in and headless has no consent prompt, so an undecided
@@ -174,6 +175,7 @@ export function buildCommandCodeTurnArgs(input: {
   return [
     ...args,
     ...imageVisionArgs,
+    ...(input.compactModPath ? ["--mod", input.compactModPath] : []),
     ...modeArgs,
     ...(hasMaxTurns ? [] : ["--max-turns", DEFAULT_MAX_TURNS]),
     ...launchArgv,

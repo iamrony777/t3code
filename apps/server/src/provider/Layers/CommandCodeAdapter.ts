@@ -26,6 +26,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
@@ -40,6 +41,10 @@ import {
   type CommandCodeOutputFrame,
   parseCommandCodeNdjsonLine,
 } from "../commandCodeCli.ts";
+import {
+  COMMAND_CODE_COMPACT_MOD_SOURCE,
+  rewriteCommandCodeCompactPrompt,
+} from "../commandCodeCompactMod.ts";
 import type { CommandCodeReasoningEffortValidator } from "../commandCodeCatalog.ts";
 import {
   makeCommandCodeTranscriptReader,
@@ -386,7 +391,7 @@ export function makeCommandCodeAdapter(
   options: CommandCodeAdapterOptions,
 ): Effect.Effect<
   ProviderAdapterShape<ProviderAdapterError>,
-  never,
+  PlatformError.PlatformError,
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
@@ -398,6 +403,7 @@ export function makeCommandCodeAdapter(
     const environment = options.environment ?? process.env;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const crypto = yield* Crypto.Crypto;
+    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const platform = yield* HostProcessPlatform;
     const startupTimeoutMs = options.startupTimeoutMs ?? START_TIMEOUT_MS;
@@ -406,6 +412,12 @@ export function makeCommandCodeAdapter(
     const adapterScope = yield* Scope.Scope;
     const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, CommandCodeSessionContext>();
+
+    const compactModDir = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-command-code-compact-",
+    });
+    const compactModPath = path.join(compactModDir, "t3-compact.ts");
+    yield* fs.writeFileString(compactModPath, COMMAND_CODE_COMPACT_MOD_SOURCE);
 
     const selectedReasoningEffort = (
       modelSelection: Parameters<typeof getModelSelectionStringOptionValue>[0],
@@ -1110,6 +1122,7 @@ export function makeCommandCodeAdapter(
           ...(options.attachmentsDir ? { attachmentsDir: options.attachmentsDir } : {}),
           ...(hasAttachments ? { enableImageVision: true } : {}),
           ...(settings.launchArgs ? { launchArgs: settings.launchArgs } : {}),
+          ...(compactModPath ? { compactModPath } : {}),
         });
         const binaryPath = settings.binaryPath || "command-code";
         const turnEnvironment = {
@@ -1441,7 +1454,7 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        return Effect.succeed({ ctx, prompt: input.input.trim() });
+        return Effect.succeed({ ctx, prompt: rewriteCommandCodeCompactPrompt(input.input) });
       });
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>

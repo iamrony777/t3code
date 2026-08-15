@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerProviderModel,
+  type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -58,6 +59,9 @@ const FALLBACK_MODELS: ReadonlyArray<ServerProviderModel> = [
 const DEFAULT_GLOBAL_OPTIONS = commandCodeGlobalOptionsFromSettings(
   parseCommandCodeGlobalSettings(undefined),
 );
+const SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand> = [
+  { name: "compact", description: "Compact the conversation history" },
+];
 
 export function attachCommandCodeGlobalOptions<Snapshot extends ServerProviderDraft>(
   snapshot: Snapshot,
@@ -213,6 +217,7 @@ export function buildInitialCommandCodeProviderSnapshot(
         enabled: settings.enabled,
         checkedAt,
         models: modelsFromSettings(settings),
+        slashCommands: SLASH_COMMANDS,
         probe: settings.enabled
           ? {
               installed: true,
@@ -368,6 +373,7 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       checkedAt,
       models: modelsFromSettings(settings, modelDiscoveryFailed ? FALLBACK_MODELS : discovered),
       skills,
+      slashCommands: SLASH_COMMANDS,
       probe: {
         installed: true,
         version: status.version,

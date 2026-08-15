@@ -7,6 +7,10 @@ import {
   parseCommandCodeNdjsonLine,
   parseCommandCodeStatus,
 } from "./commandCodeCli.ts";
+import {
+  COMMAND_CODE_COMPACT_PROMPT,
+  rewriteCommandCodeCompactPrompt,
+} from "./commandCodeCompactMod.ts";
 
 describe("parseCommandCodeStatus", () => {
   it("decodes the documented authenticated status payload", () => {
@@ -115,6 +119,24 @@ describe("commandCodeToolEnableEnv", () => {
   });
 });
 
+describe("rewriteCommandCodeCompactPrompt", () => {
+  it("rewrites a standalone /compact to the compaction instruction", () => {
+    expect(rewriteCommandCodeCompactPrompt("/compact")).toBe(COMMAND_CODE_COMPACT_PROMPT);
+  });
+
+  it("rewrites /Compact case-insensitively", () => {
+    expect(rewriteCommandCodeCompactPrompt("/Compact")).toBe(COMMAND_CODE_COMPACT_PROMPT);
+  });
+
+  it("leaves normal prompts unchanged", () => {
+    expect(rewriteCommandCodeCompactPrompt("fix the tests")).toBe("fix the tests");
+  });
+
+  it("rewrites whitespace-padded /compact", () => {
+    expect(rewriteCommandCodeCompactPrompt("  /compact  ")).toBe(COMMAND_CODE_COMPACT_PROMPT);
+  });
+});
+
 describe("buildCommandCodeTurnArgs", () => {
   const base = {
     model: "deepseek/deepseek-v4-flash",
@@ -165,6 +187,28 @@ describe("buildCommandCodeTurnArgs", () => {
       "--add-dir",
       "/data/attachments",
     ]);
+  });
+
+  it("emits --mod when a compact mod path is provided", () => {
+    expect(buildCommandCodeTurnArgs({ ...base, compactModPath: "/tmp/t3-compact.ts" })).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--skip-onboarding",
+      "--no-auto-update",
+      "--model",
+      "deepseek/deepseek-v4-flash",
+      "--mod",
+      "/tmp/t3-compact.ts",
+      "--permission-mode",
+      "dont-ask",
+      "--max-turns",
+      "250",
+    ]);
+  });
+
+  it("omits --mod when no compact mod path is provided", () => {
+    expect(buildCommandCodeTurnArgs(base)).not.toContain("--mod");
   });
 
   it.each([

@@ -85,6 +85,9 @@ describe("buildInitialCommandCodeProviderSnapshot", () => {
           currentValue: true,
         },
       ]);
+      expect(snapshot.slashCommands).toEqual([
+        { name: "compact", description: "Compact the conversation history" },
+      ]);
     }),
   );
 

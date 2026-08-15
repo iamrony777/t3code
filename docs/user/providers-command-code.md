@@ -64,6 +64,12 @@ T3 Code runs Command Code's native setting command, reads the setting back, and 
 only after the write is verified. Refresh the provider status to pick up changes made directly with
 the CLI.
 
+## Manual compaction
+
+For a Command Code thread, the composer slash menu shows **Provider → /compact**. Selecting it sends
+the native `compact_conversation` tool and reports the result. This runs the same compaction that
+Command Code uses to free context during a long conversation.
+
 ## Interaction and permission modes
 
 T3 Code remains the authority for interaction mode and runtime access. It maps the existing T3
@@ -123,7 +129,7 @@ The Early Access adapter runs Command Code in headless JSON mode. It does not cu
 - interactive approval or question callbacks;
 - steering an active turn (messages sent mid-turn are queued instead);
 - Command Code's chain-of-thought in the chat;
-- manual `/compact` or `/compact-mode` UI emulation;
+- `/compact-mode` UI emulation (Compact Mode is already available through the traits menu);
 - Shift+Tab mode emulation;
 - arbitrary provider launch arguments;
 - a new context meter on mobile; or

@@ -8,6 +8,8 @@ import {
   parseCommandCodeStatus,
 } from "./commandCodeCli.ts";
 import {
+  COMMAND_CODE_COMPACT_BOUNDARY,
+  COMMAND_CODE_COMPACT_MOD_SOURCE,
   COMMAND_CODE_COMPACT_PROMPT,
   rewriteCommandCodeCompactPrompt,
 } from "./commandCodeCompactMod.ts";
@@ -134,6 +136,12 @@ describe("rewriteCommandCodeCompactPrompt", () => {
 
   it("rewrites whitespace-padded /compact", () => {
     expect(rewriteCommandCodeCompactPrompt("  /compact  ")).toBe(COMMAND_CODE_COMPACT_PROMPT);
+  });
+
+  it("ships the persistent compaction boundary in the mod source", () => {
+    expect(COMMAND_CODE_COMPACT_MOD_SOURCE).toContain(COMMAND_CODE_COMPACT_BOUNDARY);
+    expect(COMMAND_CODE_COMPACT_MOD_SOURCE).toContain("appendCustomMessageEntry");
+    expect(COMMAND_CODE_COMPACT_MOD_SOURCE).toContain("transformContext");
   });
 });
 

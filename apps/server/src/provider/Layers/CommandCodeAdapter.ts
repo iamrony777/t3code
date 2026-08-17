@@ -67,7 +67,7 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("commandcode");
 const RESUME_VERSION = 2 as const;
-const START_TIMEOUT_MS = 10_000;
+const START_TIMEOUT_MS = 20_000;
 
 export interface CommandCodeAdapterOptions {
   readonly catalogController: CommandCodeAdapterCatalogController;

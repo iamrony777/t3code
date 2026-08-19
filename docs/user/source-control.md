@@ -42,6 +42,7 @@ T3 Code works with the platforms your team already uses:
 - While working in a thread, open linked reviews in the same compact right-panel tabs without
   leaving the conversation
 - Open the review directly in your browser with one click
+- Command-click (Control-click on Windows and Linux) a pull request number in the sidebar to open it in your browser instead of in T3 Code
 - Check out a teammate's branch to review code locally
 
 **Fix what you wrote, in place**
@@ -102,7 +103,8 @@ export T3CODE_BITBUCKET_ACCESS_TOKEN="your-access-token"
 ```
 
 Or an Atlassian account email plus API token, with read/write access to pull requests and
-repositories:
+repositories, plus read access to your user account (`read:user:bitbucket`, used to verify the
+connection):
 
 ```bash
 export T3CODE_BITBUCKET_EMAIL="you@example.com"

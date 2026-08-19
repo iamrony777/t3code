@@ -1,46 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  ProviderInstanceId,
-  type ProviderGlobalOption,
-  type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contracts";
 
 import type { ModelOption } from "../../lib/modelOptions";
-import {
-  buildThreadSettingsOptionSections,
-  pendingModelAfterPress,
-} from "./thread-settings-sheet-state";
-
-const REASONING: ProviderOptionDescriptor = {
-  id: "reasoningEffort",
-  label: "Reasoning",
-  type: "select",
-  currentValue: "high",
-  options: [
-    { id: "default", label: "Default", isDefault: true },
-    { id: "high", label: "High" },
-  ],
-};
-const GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [
-  {
-    id: "compactMode",
-    label: "Compact Mode",
-    type: "select",
-    currentValue: "normal",
-    options: [
-      { id: "normal", label: "Normal", isDefault: true },
-      { id: "fast", label: "Fast" },
-    ],
-  },
-  {
-    id: "tasteLearning",
-    label: "Taste Learning",
-    type: "boolean",
-    currentValue: false,
-  },
-];
+import { modelMatchesCatalogQuery, pendingModelAfterPress } from "./thread-settings-sheet-state";
 
 function modelOption(
   model: string,
@@ -65,6 +28,26 @@ function modelOption(
 }
 
 describe("thread settings sheet state", () => {
+  it("matches visible model and provider terms", () => {
+    const model = modelOption("gpt-next");
+
+    expect(modelMatchesCatalogQuery({ model, providerLabel: "Codex", query: "NEXT" })).toBe(true);
+    expect(modelMatchesCatalogQuery({ model, providerLabel: "Codex", query: "codex" })).toBe(true);
+    expect(modelMatchesCatalogQuery({ model, providerLabel: "Codex", query: "claude" })).toBe(
+      false,
+    );
+  });
+
+  it("treats whitespace-only catalog searches as empty", () => {
+    expect(
+      modelMatchesCatalogQuery({
+        model: modelOption("gpt-next"),
+        providerLabel: "Codex",
+        query: "   ",
+      }),
+    ).toBe(true);
+  });
+
   it("clears staging when the applied model is pressed", () => {
     expect(
       pendingModelAfterPress({
@@ -97,39 +80,5 @@ describe("thread settings sheet state", () => {
         pressedIsApplied: false,
       }),
     ).toBe(pressed);
-  });
-
-  it("orders model settings before Compact Mode and Taste Learning", () => {
-    const sections = buildThreadSettingsOptionSections(
-      [{ label: "Reasoning", type: "select", descriptor: REASONING }],
-      GLOBAL_OPTIONS,
-      new Set(),
-    );
-
-    expect(sections.map(({ domain, label }) => [domain, label])).toEqual([
-      ["model", "Reasoning"],
-      ["global", "Compact Mode"],
-      ["global", "Taste Learning"],
-    ]);
-  });
-
-  it("keeps global settings visible without a reasoning descriptor", () => {
-    const sections = buildThreadSettingsOptionSections([], GLOBAL_OPTIONS, new Set());
-
-    expect(sections.map(({ label }) => label)).toEqual(["Compact Mode", "Taste Learning"]);
-  });
-
-  it("disables only the pending provider-global option", () => {
-    const sections = buildThreadSettingsOptionSections(
-      [{ label: "Reasoning", type: "select", descriptor: REASONING }],
-      GLOBAL_OPTIONS,
-      new Set(["compactMode"]),
-    );
-
-    expect(sections.map(({ label, pending }) => [label, pending])).toEqual([
-      ["Reasoning", false],
-      ["Compact Mode", true],
-      ["Taste Learning", false],
-    ]);
   });
 });

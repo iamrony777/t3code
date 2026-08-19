@@ -1,41 +1,22 @@
-import type { ProviderGlobalOption, ProviderOptionDescriptor } from "@t3tools/contracts";
-
 import type { ModelOption } from "../../lib/modelOptions";
 
-export interface ThreadSettingsModelOptionRow {
-  readonly label: string;
-  readonly type: "select" | "boolean";
-  readonly descriptor: ProviderOptionDescriptor | undefined;
-}
+/** Match the terms a user can actually see or recognize in the model picker. */
+export function modelMatchesCatalogQuery(input: {
+  readonly model: ModelOption;
+  readonly providerLabel: string;
+  readonly query: string;
+}): boolean {
+  const query = input.query.trim().toLocaleLowerCase();
+  if (query.length === 0) {
+    return true;
+  }
 
-export type ThreadSettingsOptionSection =
-  | (ThreadSettingsModelOptionRow & {
-      readonly domain: "model";
-      readonly pending: false;
-    })
-  | {
-      readonly domain: "global";
-      readonly label: string;
-      readonly type: "select" | "boolean";
-      readonly descriptor: ProviderGlobalOption;
-      readonly pending: boolean;
-    };
-
-export function buildThreadSettingsOptionSections(
-  modelRows: ReadonlyArray<ThreadSettingsModelOptionRow>,
-  globalOptions: ReadonlyArray<ProviderGlobalOption>,
-  pendingGlobalOptionIds: ReadonlySet<string>,
-): ReadonlyArray<ThreadSettingsOptionSection> {
   return [
-    ...modelRows.map((row) => ({ ...row, domain: "model" as const, pending: false as const })),
-    ...globalOptions.map((descriptor) => ({
-      domain: "global" as const,
-      label: descriptor.label,
-      type: descriptor.type,
-      descriptor,
-      pending: pendingGlobalOptionIds.has(descriptor.id),
-    })),
-  ];
+    input.model.label,
+    input.model.subtitle,
+    input.model.selection.model,
+    input.providerLabel,
+  ].some((value) => value.toLocaleLowerCase().includes(query));
 }
 
 /** Preserve staged provider options when the highlighted model is tapped again. */
@@ -48,4 +29,19 @@ export function pendingModelAfterPress(input: {
     return null;
   }
   return input.current?.key === input.pressed.key ? input.current : input.pressed;
+}
+
+/**
+ * Primary and selected providers start open; all other catalogs start closed.
+ * A user's disclosure tap inverts that default until the picker is dismissed.
+ */
+export function providerSectionIsCollapsed(input: {
+  readonly defaultExpanded: boolean;
+  readonly hasExpansionOverride: boolean;
+  readonly isNarrowed: boolean;
+}): boolean {
+  if (input.isNarrowed) {
+    return false;
+  }
+  return input.defaultExpanded ? input.hasExpansionOverride : !input.hasExpansionOverride;
 }

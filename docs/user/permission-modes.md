@@ -49,5 +49,4 @@ Command Code runs headlessly, so T3 Code cannot relay its interactive permission
 use `auto-accept`, and **Full access** uses `--yolo`. Plan interaction mode uses Command Code's
 read-only `--plan` mode. See [Command Code](./providers-command-code.md) for the current limits.
 
-Mobile offers the same four modes. It labels the first one **Approve actions** rather than
-**Supervised**.
+Mobile offers the same four modes with the same labels and descriptions.

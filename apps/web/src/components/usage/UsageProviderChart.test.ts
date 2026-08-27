@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildDayColumns, niceScale } from "./UsageProviderChart";
-import { PROVIDER_ORDER, visibleProviders } from "./usageProviders";
+import { providersWithUsage } from "./usageProviders";
 
 describe("niceScale", () => {
   it("never puts the peak above the top of the scale", () => {
@@ -68,25 +68,20 @@ describe("buildDayColumns", () => {
     ],
   ]);
 
-  // What the page passes: only the providers that reported in this window.
-  const providers = visibleProviders([{ provider: "codex" }, { provider: "claude" }]);
-
   it("plots each day on its own", () => {
-    expect(buildDayColumns(days, byDay, "cost", providers).map((column) => column.total)).toEqual([
-      30, 0, 5,
-    ]);
+    expect(buildDayColumns(days, byDay, "cost").map((column) => column.total)).toEqual([30, 0, 5]);
   });
 
   it("reads the requested metric", () => {
-    expect(buildDayColumns(days, byDay, "tokens", providers).map((column) => column.total)).toEqual(
-      [300, 0, 50],
-    );
+    expect(buildDayColumns(days, byDay, "tokens").map((column) => column.total)).toEqual([
+      300, 0, 50,
+    ]);
   });
 
   it("keeps band values absolute rather than cumulative", () => {
     // Regression: the bands were once stack offsets, which drew Claude Code
     // permanently above Codex regardless of which provider spent more.
-    const [first] = buildDayColumns(days, byDay, "cost", providers);
+    const [first] = buildDayColumns(days, byDay, "cost");
 
     expect(first?.bands).toEqual([
       { provider: "codex", value: 10 },
@@ -94,32 +89,22 @@ describe("buildDayColumns", () => {
     ]);
   });
 
-  it("bands only the providers it was given", () => {
-    // Regression: every provider in PROVIDER_ORDER was banded unconditionally,
-    // so a provider the user never ran drew a permanently-zero band.
-    const [first] = buildDayColumns(
-      days,
-      byDay,
-      "cost",
-      visibleProviders([{ provider: "claude" }]),
-    );
-
-    expect(first?.bands.map((band) => band.provider)).toEqual(["claude"]);
-  });
-
-  it("still totals correctly when a provider has no data", () => {
-    // Bands the data never fills stay zero, so the headline figure that
-    // `mergeUsage` computed is the same number the stack adds up to.
-    const withAll = buildDayColumns(days, byDay, "cost", PROVIDER_ORDER);
-
-    expect(withAll.map((column) => column.total)).toEqual([30, 0, 5]);
-  });
-
   it("reports the total as the sum of its bands", () => {
-    for (const column of buildDayColumns(days, byDay, "cost", providers)) {
+    for (const column of buildDayColumns(days, byDay, "cost")) {
       const sum = column.bands.reduce((running, band) => running + band.value, 0);
       expect(column.total).toBeCloseTo(sum, 9);
     }
+  });
+});
+
+describe("providersWithUsage", () => {
+  it("omits providers with no cost or tokens", () => {
+    expect(
+      providersWithUsage([
+        { provider: "codex", costUsd: 0, totalTokens: 0 },
+        { provider: "claude", costUsd: 0, totalTokens: 200 },
+      ]),
+    ).toEqual(["claude"]);
   });
 });
 

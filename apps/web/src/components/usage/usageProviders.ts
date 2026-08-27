@@ -10,13 +10,13 @@ type UsageProviderPresentation = {
 
 /**
  * Exhaustive presentation for providers supported by the usage contract.
- * Declaration order is reused by every chart, table, legend, and skeleton, so
- * adding a provider only requires its contract support and one entry here.
+ * Declaration order is reused by every chart and table, so adding a provider
+ * only requires its contract support and one entry here.
  */
 export const PROVIDER_PRESENTATION = {
   codex: {
     label: "Codex",
-    color: "var(--foreground)",
+    color: "var(--contrast-foreground)",
     mark: OpenAI,
   },
   claude: {
@@ -26,20 +26,21 @@ export const PROVIDER_PRESENTATION = {
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
-/** The chart layers every series from zero, so order only controls how it is read. */
+/** Stable provider reading order across charts, summaries, tables, and hover rows. */
 export const PROVIDER_ORDER = Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[];
 
-/**
- * Providers worth rendering for the data on screen, in {@link PROVIDER_ORDER}.
- *
- * A provider a user never runs would otherwise hold a permanently-zero column,
- * legend entry and chart band. With nothing to narrow to, the full order stands
- * so the empty state keeps the loaded page's shape.
- */
-export function visibleProviders(
-  providers: readonly { readonly provider: UsageProviderKind }[],
+/** Providers with real activity, independent of the metric currently displayed. */
+export function providersWithUsage(
+  totals: readonly {
+    readonly provider: UsageProviderKind;
+    readonly costUsd: number;
+    readonly totalTokens: number;
+  }[],
 ): readonly UsageProviderKind[] {
-  const present = new Set(providers.map((entry) => entry.provider));
-  const visible = PROVIDER_ORDER.filter((provider) => present.has(provider));
-  return visible.length === 0 ? PROVIDER_ORDER : visible;
+  const active = new Set(
+    totals
+      .filter((entry) => entry.totalTokens > 0 || entry.costUsd > 0)
+      .map((entry) => entry.provider),
+  );
+  return PROVIDER_ORDER.filter((provider) => active.has(provider));
 }

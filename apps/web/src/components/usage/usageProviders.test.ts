@@ -1,7 +1,7 @@
 import { UsageProviderKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { PROVIDER_ORDER, visibleProviders } from "./usageProviders";
+import { PROVIDER_ORDER } from "./usageProviders";
 
 describe("PROVIDER_ORDER", () => {
   // The maps keyed by `UsageProviderKind` are exhaustiveness-checked by the
@@ -10,23 +10,5 @@ describe("PROVIDER_ORDER", () => {
   // single compile error, so assert the coverage instead.
   it("covers every provider the contract defines", () => {
     expect([...PROVIDER_ORDER].sort()).toEqual([...UsageProviderKind.literals].sort());
-  });
-});
-
-describe("visibleProviders", () => {
-  it("keeps reading order rather than the order reported", () => {
-    expect(visibleProviders([{ provider: "claude" }, { provider: "codex" }])).toEqual([
-      "codex",
-      "claude",
-    ]);
-  });
-
-  it("drops providers with no data", () => {
-    expect(visibleProviders([{ provider: "claude" }])).toEqual(["claude"]);
-  });
-
-  it("falls back to the full order when nothing reported", () => {
-    // Nothing to narrow to, and the empty state still has to render a page.
-    expect(visibleProviders([])).toEqual(PROVIDER_ORDER);
   });
 });

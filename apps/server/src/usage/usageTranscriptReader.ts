@@ -21,6 +21,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseCommandCodeLine,
+  parseGrokLine,
   type UsageRecord,
   type UsageScanProvider,
 } from "./usageTranscripts.ts";
@@ -38,13 +39,19 @@ export interface TranscriptFile {
  * Errors on individual entries are swallowed: session files rotate and get
  * removed while the walk is in flight, and a partial listing is far better than
  * failing the page.
+ *
+ * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
+ * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
+ * never carry usage, so the basename filter keeps a cold scan off those files.
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
   provider: UsageScanProvider,
+  options?: { readonly fileName?: string },
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
+  const fileName = options?.fileName;
 
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -59,7 +66,11 @@ export async function listTranscriptFiles(
         await walk(child);
         continue;
       }
-      if (!entry.name.endsWith(".jsonl")) continue;
+      if (fileName !== undefined) {
+        if (entry.name !== fileName) continue;
+      } else if (!entry.name.endsWith(".jsonl")) {
+        continue;
+      }
       // Command Code parks `<uuid>.checkpoints.jsonl` beside `<uuid>.jsonl`.
       // Checkpoint lines carry no usage, but the session id comes from the file
       // name, so scanning one would invent a `<uuid>.checkpoints` session.
@@ -142,6 +153,11 @@ export async function readTranscriptRecords(
         if (!mightCarryUsage(line, provider)) continue;
         const record = parseCommandCodeLine(line, commandCodeSessionId);
         if (record !== null) records.push(record);
+        continue;
+      }
+      if (provider === "grok") {
+        if (!mightCarryUsage(line, provider)) continue;
+        for (const grokRecord of parseGrokLine(line)) records.push(grokRecord);
         continue;
       }
 

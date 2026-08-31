@@ -10,8 +10,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as ServerConfig from "../../config.ts";
 import type { CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
@@ -576,6 +579,103 @@ it.layer(NodeServices.layer)("checkCommandCodeProviderStatus", (it) => {
             },
           ],
         });
+      }),
+    ),
+  );
+
+  it.effect("accepts a complete model list when the CLI does not exit", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-hanging-list-" });
+        const binaryPath = path.join(dir, "command-code");
+        yield* fs.writeFileString(binaryPath, "#!/bin/sh\nexit 0\n");
+        yield* fs.chmod(binaryPath, 0o755);
+
+        const modelOutputObserved = yield* Deferred.make<void>();
+        const modelProcessKilled = yield* Deferred.make<void>();
+        const encoder = new TextEncoder();
+        const modelOutput = [
+          "Anthropic",
+          "claude-sonnet-4-6  Claude Sonnet 4.6 (default)",
+          "",
+          'Pass the full id, or just the short name after the last "/":',
+          "cmd --model claude-sonnet-4-6",
+          "",
+          "Docs:  https://commandcode.ai/docs/reference/cli/models",
+          "",
+        ].join("\n");
+
+        const makeHandle = (input: {
+          readonly stdout: Stream.Stream<Uint8Array>;
+          readonly exitCode: Effect.Effect<ChildProcessSpawner.ExitCode>;
+          readonly kill: ChildProcessSpawner.ChildProcessHandle["kill"];
+        }) =>
+          ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: input.exitCode,
+            isRunning: Effect.succeed(true),
+            kill: input.kill,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: input.stdout,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          });
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            const args = (command as unknown as { readonly args: ReadonlyArray<string> }).args;
+            const handle = args.includes("--list-models")
+              ? makeHandle({
+                  stdout: Stream.fromEffect(
+                    Deferred.succeed(modelOutputObserved, undefined).pipe(
+                      Effect.as(encoder.encode(modelOutput)),
+                    ),
+                  ).pipe(
+                    Stream.concat(
+                      Stream.fromEffect(
+                        Deferred.await(modelProcessKilled).pipe(Effect.as(encoder.encode(""))),
+                      ),
+                    ),
+                  ),
+                  exitCode: Deferred.await(modelProcessKilled).pipe(
+                    Effect.as(ChildProcessSpawner.ExitCode(143)),
+                  ),
+                  kill: () => Deferred.succeed(modelProcessKilled, undefined).pipe(Effect.ignore),
+                })
+              : makeHandle({
+                  stdout: Stream.make(
+                    encoder.encode(
+                      '{"authenticated":true,"version":"1.39.0","provider":"command-code"}',
+                    ),
+                  ),
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+                  kill: () => Effect.void,
+                });
+            yield* Effect.addFinalizer(() => handle.kill().pipe(Effect.ignore));
+            return handle;
+          }),
+        );
+
+        const probeFiber = yield* Effect.forkChild(
+          probeCommandCodeProviderStatus(
+            decodeSettings({ binaryPath }),
+            ProviderInstanceId.make("command-code-hanging-list"),
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+        );
+        yield* Deferred.await(modelOutputObserved);
+        yield* TestClock.adjust("10 seconds");
+        const result = yield* Fiber.join(probeFiber);
+
+        expect(result.snapshot.status).toBe("ready");
+        expect(result.snapshot.models.map((model) => model.slug)).toEqual(["claude-sonnet-4-6"]);
+        expect(result.catalogSeed?.cliModels.map((model) => model.slug)).toEqual([
+          "claude-sonnet-4-6",
+        ]);
+        expect(yield* Deferred.isDone(modelProcessKilled)).toBe(true);
       }),
     ),
   );

@@ -10,11 +10,15 @@ import {
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { CommandCodeCatalogIdentity, CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
@@ -205,6 +209,64 @@ const runCommand = (
     return yield* spawnAndCollect(binaryPath, command);
   });
 
+const hasCompleteCommandCodeModelList = (stdout: string) =>
+  /^Docs:\s+\S+\s*$/m.test(stdout) && parseCommandCodeModels(stdout).length > 0;
+
+const runModelListCommand = (settings: CommandCodeSettings, environment: NodeJS.ProcessEnv) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const command = yield* makeCommandCodeProbeCommand(
+        settings,
+        ["--list-models", "--no-auto-update"],
+        environment,
+      );
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const child = yield* spawner.spawn(command);
+      const stdoutRef = yield* Ref.make("");
+      const stderrRef = yield* Ref.make("");
+      const outputComplete = yield* Deferred.make<void>();
+
+      const stdoutFiber = yield* Effect.forkScoped(
+        child.stdout.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((chunk) =>
+            Ref.updateAndGet(stdoutRef, (stdout) => `${stdout}${chunk}`).pipe(
+              Effect.flatMap((stdout) =>
+                hasCompleteCommandCodeModelList(stdout)
+                  ? Deferred.succeed(outputComplete, undefined).pipe(Effect.ignore)
+                  : Effect.void,
+              ),
+            ),
+          ),
+        ),
+      );
+      const stderrFiber = yield* Effect.forkScoped(
+        child.stderr.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((chunk) => Ref.update(stderrRef, (stderr) => `${stderr}${chunk}`)),
+        ),
+      );
+
+      const outcome = yield* Effect.raceFirst(
+        child.exitCode.pipe(
+          Effect.map((code) => ({ _tag: "Exited" as const, code: Number(code) })),
+        ),
+        Deferred.await(outputComplete).pipe(Effect.as({ _tag: "OutputComplete" as const })),
+      );
+      if (outcome._tag === "OutputComplete") {
+        yield* child.kill({ forceKillAfter: PROBE_FORCE_KILL_AFTER }).pipe(Effect.ignore);
+      }
+      yield* Fiber.join(stdoutFiber);
+      yield* Fiber.join(stderrFiber);
+
+      return {
+        code: outcome._tag === "Exited" ? outcome.code : 0,
+        stdout: yield* Ref.get(stdoutRef),
+        stderr: yield* Ref.get(stderrRef),
+      };
+    }),
+  );
+
 export function buildInitialCommandCodeProviderSnapshot(
   settings: CommandCodeSettings,
 ): Effect.Effect<ServerProviderDraft> {
@@ -345,11 +407,10 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       };
     }
 
-    const modelExit = yield* runCommand(
-      settings,
-      ["--list-models", "--no-auto-update"],
-      environment,
-    ).pipe(Effect.timeoutOption(PROBE_TIMEOUT_MS), Effect.result);
+    const modelExit = yield* runModelListCommand(settings, environment).pipe(
+      Effect.timeoutOption(PROBE_TIMEOUT_MS),
+      Effect.result,
+    );
     const cliModels =
       Result.isSuccess(modelExit) &&
       Option.isSome(modelExit.success) &&

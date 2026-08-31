@@ -10,6 +10,7 @@ import {
 import {
   buildTraitsMenuSections,
   buildTraitsTriggerDisplay,
+  buildUnavailableModelOptionDescriptors,
   runProviderGlobalOptionChange,
   TraitsPicker,
 } from "./TraitsPicker";
@@ -274,5 +275,38 @@ describe("Command Code global traits", () => {
     });
     expect(onGlobalOptionError).toHaveBeenCalledWith("native write failed");
     expect(GLOBAL_OPTIONS[0]?.currentValue).toBe("normal");
+  });
+});
+
+describe("buildUnavailableModelOptionDescriptors", () => {
+  it("shows only saved values without inventing alternatives", () => {
+    expect(
+      buildUnavailableModelOptionDescriptors([
+        { id: "variant", value: "max" },
+        { id: "agent", value: "build" },
+        { id: "fastMode", value: true },
+      ]),
+    ).toEqual([
+      {
+        id: "variant",
+        label: "Variant",
+        type: "select",
+        options: [{ id: "max", label: "max" }],
+        currentValue: "max",
+      },
+      {
+        id: "agent",
+        label: "Agent",
+        type: "select",
+        options: [{ id: "build", label: "build" }],
+        currentValue: "build",
+      },
+      {
+        id: "fastMode",
+        label: "Fast Mode",
+        type: "boolean",
+        currentValue: true,
+      },
+    ]);
   });
 });

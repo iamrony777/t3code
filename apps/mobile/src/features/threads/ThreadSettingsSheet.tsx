@@ -51,7 +51,7 @@ import {
   runProviderGlobalOptionChange,
 } from "../../lib/providerOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
-import { useThemeColor } from "../../lib/useThemeColor";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import {
   NativeHeaderToolbar,
   NativeStackScreenOptions,
@@ -59,8 +59,14 @@ import {
 } from "../../native/StackHeader";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useEnvironmentServerConfig } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
+import {
+  createProviderCatalogRefreshRunner,
+  providerCatalogRefreshError,
+} from "./provider-catalog-refresh";
 import {
   createNativeMailSearchToolbarItem,
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
@@ -104,10 +110,9 @@ function ModelRow(props: {
   readonly isFirst: boolean;
   readonly isLast: boolean;
 }) {
-  const checkmarkColor = useThemeColor("--color-icon");
   return (
     <Pressable
-      accessibilityLabel={props.option.label}
+      accessibilityLabel={[props.option.label, props.option.subtitle].filter(Boolean).join(", ")}
       accessibilityRole="radio"
       accessibilityState={{ checked: props.selected }}
       onPress={props.onPress}
@@ -117,25 +122,36 @@ function ModelRow(props: {
         props.isLast ? "rounded-b-2xl" : "border-b border-border-subtle",
       )}
     >
-      <Text className="min-w-0 shrink text-base font-t3-medium text-foreground" numberOfLines={1}>
-        {props.option.label}
-      </Text>
-      {props.option.isDefault ? (
-        <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
-          <Text className="text-3xs font-t3-bold text-foreground-muted">Default</Text>
+      <View className="min-w-0 flex-1">
+        <View className="flex-row items-center gap-2">
+          <Text
+            className="min-w-0 shrink text-base font-t3-medium text-foreground"
+            numberOfLines={1}
+          >
+            {props.option.label}
+          </Text>
+          {props.option.isDefault ? (
+            <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
+              <Text className="text-3xs font-t3-bold text-foreground-muted">Default</Text>
+            </View>
+          ) : null}
+          {props.option.isLegacy ? (
+            <View className="rounded-md bg-subtle px-1.5 py-0.5">
+              <Text className="text-3xs font-t3-bold text-foreground-muted">Legacy</Text>
+            </View>
+          ) : null}
         </View>
-      ) : null}
-      {props.option.isLegacy ? (
-        <View className="rounded-md bg-subtle px-1.5 py-0.5">
-          <Text className="text-3xs font-t3-bold text-foreground-muted">Legacy</Text>
-        </View>
-      ) : null}
-      <View className="flex-1" />
+        {props.option.subtitle ? (
+          <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+            {props.option.subtitle}
+          </Text>
+        ) : null}
+      </View>
       {props.selected ? (
         <SymbolView
           name="checkmark"
           size={16}
-          tintColor={checkmarkColor}
+          tintColorClassName={"accent-icon"}
           type="monochrome"
           weight="semibold"
         />
@@ -153,7 +169,6 @@ function ProviderHeader(props: {
   readonly modelCount: number;
   readonly onToggle: () => void;
 }) {
-  const iconSubtle = useThemeColor("--color-icon-subtle");
   const content = (
     <>
       <ProviderIcon provider={props.driver} size={15} />
@@ -169,7 +184,7 @@ function ProviderHeader(props: {
           <SymbolView
             name={props.collapsed ? "chevron.down" : "chevron.up"}
             size={12}
-            tintColor={iconSubtle}
+            tintColorClassName={"accent-icon-subtle"}
             type="monochrome"
           />
         </>
@@ -206,7 +221,6 @@ function DisclosureRow(props: {
   readonly disabled?: boolean;
   readonly isLast?: boolean;
 }) {
-  const iconSubtle = useThemeColor("--color-icon-subtle");
   return (
     <Pressable
       accessibilityRole="button"
@@ -225,7 +239,12 @@ function DisclosureRow(props: {
           {props.value}
         </Text>
       ) : null}
-      <SymbolView name="chevron.right" size={12} tintColor={iconSubtle} type="monochrome" />
+      <SymbolView
+        name="chevron.right"
+        size={12}
+        tintColorClassName={"accent-icon-subtle"}
+        type="monochrome"
+      />
     </Pressable>
   );
 }
@@ -238,7 +257,6 @@ function ChoiceRow(props: {
   readonly onPress: () => void;
   readonly isLast: boolean;
 }) {
-  const checkmarkColor = useThemeColor("--color-icon");
   return (
     <Pressable
       accessibilityLabel={props.description ? `${props.label}. ${props.description}` : props.label}
@@ -260,7 +278,7 @@ function ChoiceRow(props: {
         <SymbolView
           name="checkmark"
           size={16}
-          tintColor={checkmarkColor}
+          tintColorClassName={"accent-icon"}
           type="monochrome"
           weight="semibold"
         />
@@ -301,13 +319,13 @@ type ThreadSettingsSubmenuPage =
   | { readonly kind: "runtime" };
 
 type ThreadSettingsSessionProps = {
+  readonly environmentId: EnvironmentId | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
   readonly onSelectModel: (option: ModelOption) => void;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   /** Provider-global (native) settings for the applied model's instance. */
-  readonly environmentId: EnvironmentId | null;
   readonly globalOptions: ReadonlyArray<ProviderGlobalOption>;
   readonly onSetGlobalOption: (input: ServerProviderGlobalOptionSetInput) => Promise<void>;
   readonly runtimeMode: RuntimeMode;
@@ -358,6 +376,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 }
 
 type ThreadSettingsSessionValue = {
+  readonly environmentId: EnvironmentId | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
@@ -522,6 +541,7 @@ function ThreadSettingsSessionProvider(
 
   const value = useMemo<ThreadSettingsSessionValue>(
     () => ({
+      environmentId: props.environmentId,
       providerGroups: props.providerGroups,
       runtimeMode: props.runtimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
@@ -555,6 +575,7 @@ function ThreadSettingsSessionProvider(
       hasLegacyModels,
       isApplied,
       isDisplayed,
+      props.environmentId,
       pendingModel,
       pressModel,
       providerFilter,
@@ -985,34 +1006,34 @@ function ThreadSettingsChoiceContent(props: {
           })),
         }
       : props.submenu.kind === "runtime"
-      ? {
-          rows: RUNTIME_MODE_CHOICES.map((choice) => ({
-            id: choice.mode,
-            label: choice.label,
-            description: choice.description,
-            selected: choice.mode === session.runtimeMode,
-            onPress: () => {
-              void Haptics.selectionAsync();
-              session.onUpdateRuntimeMode(choice.mode);
-              props.onSelected();
-            },
-          })),
-        }
-      : activeDescriptor?.type === "select"
         ? {
-            rows: selectableChoices(activeDescriptor).map((choice) => ({
-              id: choice.id,
+            rows: RUNTIME_MODE_CHOICES.map((choice) => ({
+              id: choice.mode,
               label: choice.label,
-              description: undefined,
-              selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
+              description: choice.description,
+              selected: choice.mode === session.runtimeMode,
               onPress: () => {
                 void Haptics.selectionAsync();
-                session.applyOptionChange(activeDescriptor.id, choice.id);
+                session.onUpdateRuntimeMode(choice.mode);
                 props.onSelected();
               },
             })),
           }
-        : null;
+        : activeDescriptor?.type === "select"
+          ? {
+              rows: selectableChoices(activeDescriptor).map((choice) => ({
+                id: choice.id,
+                label: choice.label,
+                description: undefined,
+                selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  session.applyOptionChange(activeDescriptor.id, choice.id);
+                  props.onSelected();
+                },
+              })),
+            }
+          : null;
 
   if (!submenuContent) {
     return <View className="flex-1 bg-sheet" />;
@@ -1074,6 +1095,23 @@ function ThreadSettingsModelsScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<ThreadSettingsPickerStackParams>>();
   const usesNativeMailSearchToolbar = Platform.OS === "ios" && NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED;
   const hasCustomCatalogFilter = session.providerFilter !== null || session.showLegacy;
+  const refreshProvidersCommand = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const refreshProviderCatalog = useMemo(
+    () => createProviderCatalogRefreshRunner(refreshProvidersCommand),
+    [refreshProvidersCommand],
+  );
+  const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const refreshProviders = useCallback(() => {
+    if (!session.environmentId || isRefreshingProviders) return;
+    setIsRefreshingProviders(true);
+    void refreshProviderCatalog(session.environmentId).then((result) => {
+      setIsRefreshingProviders(false);
+      const error = providerCatalogRefreshError(result);
+      if (error) Alert.alert("Could not refresh models", error);
+    });
+  }, [isRefreshingProviders, refreshProviderCatalog, session.environmentId]);
   const commitAndClose = useCallback(() => {
     session.commitPendingModel();
     presentation.onClose();
@@ -1121,6 +1159,12 @@ function ThreadSettingsModelsScreen() {
       {Platform.OS === "android" ? (
         <AndroidScreenHeader
           actions={[
+            {
+              accessibilityLabel: "Refresh models",
+              disabled: isRefreshingProviders || session.environmentId === null,
+              icon: "arrow.clockwise",
+              onPress: refreshProviders,
+            },
             {
               accessibilityLabel: session.pendingModel ? "Save thread settings" : "Done",
               icon: "checkmark",
@@ -1175,9 +1219,8 @@ function ThreadSettingsModelsScreen() {
               : ((submenu.kind === "global-descriptor"
                   ? session.globalOptions
                   : session.displayedDescriptors
-                ).find(
-                  (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
-                )?.label ?? "Option");
+                ).find((descriptor) => descriptor.type === "select" && descriptor.id === submenu.id)
+                  ?.label ?? "Option");
           navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
         }}
       />
@@ -1189,6 +1232,13 @@ function ThreadSettingsModelsScreen() {
         />
       </NativeHeaderToolbar>
       <NativeHeaderToolbar placement="right">
+        <NativeHeaderToolbar.Button
+          accessibilityLabel="Refresh models"
+          disabled={isRefreshingProviders || session.environmentId === null}
+          icon="arrow.clockwise"
+          onPress={refreshProviders}
+          separateBackground
+        />
         <NativeHeaderToolbar.Button
           accessibilityLabel={session.pendingModel ? "Save thread settings" : "Done"}
           label={session.pendingModel ? "Save" : "Done"}
@@ -1256,8 +1306,9 @@ function ThreadSettingsChoiceScreen() {
 }
 
 function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) {
-  const solidSheetBackground = String(useThemeColor("--color-sheet-solid"));
-  const foreground = String(useThemeColor("--color-foreground"));
+  const theme = useUniwindTheme();
+  const solidSheetBackground = theme["--color-sheet-solid"];
+  const foreground = theme["--color-foreground"];
   const presentation = useMemo(
     () => ({
       onClose: props.onClose,
@@ -1337,7 +1388,7 @@ export function ExistingThreadSettingsRouteScreen() {
 export function NewTaskThreadSettingsRouteScreen() {
   const flow = useNewTaskFlow();
   const navigation = useNavigation<NativeStackNavigationProp<Record<string, object | undefined>>>();
-  const environmentId = flow.selectedProject?.environmentId ?? null;
+  const environmentId = flow.selectedProject?.environmentId ?? flow.selectedEnvironmentId;
   const serverConfig = useEnvironmentServerConfig(environmentId);
   const setGlobalOption = useSetProviderGlobalOption(environmentId);
   const optionDescriptors = useMemo(
@@ -1355,12 +1406,12 @@ export function NewTaskThreadSettingsRouteScreen() {
 
   return (
     <ThreadSettingsSessionProvider
+      environmentId={environmentId}
       providerGroups={flow.providerGroups}
       selectedModel={flow.selectedModel}
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
-      environmentId={environmentId}
       globalOptions={globalOptions}
       onSetGlobalOption={setGlobalOption}
       runtimeMode={flow.runtimeMode}

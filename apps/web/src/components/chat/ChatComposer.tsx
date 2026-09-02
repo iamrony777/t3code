@@ -1,5 +1,6 @@
 import type {
   ApprovalRequestId,
+  AssistantCitation,
   ChatFileAttachment,
   EnvironmentId,
   ModelSelection,
@@ -50,6 +51,7 @@ import {
   composerSubmissionIntentForEnter,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  formatAssistantCitationForComposer,
   replaceTextRange,
 } from "../../composer-logic";
 import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
@@ -127,6 +129,7 @@ import {
 } from "../../lib/attachmentUploadState";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { getTerminalFocusOwner } from "../../lib/terminalFocus";
+import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
 import {
   type TerminalContextDraft,
@@ -155,7 +158,10 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { ComposerControl, ComposerControlIcon, ComposerSelectControl } from "./ComposerControl";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
-import { searchSlashCommandItems } from "./composerSlashCommandSearch";
+import {
+  searchSlashCommandItems,
+  slashCommandItemsForPromptPosition,
+} from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -179,6 +185,7 @@ import {
   submitComposerDraft,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
+import { prepareVideoFirstFrame } from "../../lib/videoFirstFrame";
 
 function ComposerVideoThumbnail({ file }: { file: File }) {
   const setVideo = useCallback(
@@ -196,9 +203,7 @@ function ComposerVideoThumbnail({ file }: { file: File }) {
       playsInline
       preload="metadata"
       aria-hidden="true"
-      onLoadedMetadata={(event) => {
-        event.currentTarget.currentTime = Math.min(0.1, event.currentTarget.duration || 0);
-      }}
+      onLoadedMetadata={(event) => prepareVideoFirstFrame(event.currentTarget)}
       className="pointer-events-none absolute inset-0 size-full object-cover"
     />
   );
@@ -548,9 +553,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
           compactDisabledReason={props.compactDisabledReason}
         />
       ) : null}
-      {props.isPreparingWorktree ? (
-        <span className="text-secondary-label text-xs">Preparing worktree...</span>
-      ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
         pendingAction={props.pendingAction}
@@ -582,6 +584,10 @@ export interface ChatComposerHandle {
   focusAt: (cursor: number) => void;
   addDroppedFiles: (files: File[]) => void;
   insertTextAtEnd: (text: string, options?: { ensureLeadingBoundary?: boolean }) => boolean;
+  citeAssistantText: (
+    citation: AssistantCitation,
+    sourceAnchor: AssistantCitationSourceAnchor,
+  ) => boolean;
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
@@ -1381,11 +1387,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           skill.description ??
           (skill.scope ? `${skill.scope} skill` : ""),
       }));
-      const slashCommandItems = [
-        ...builtInSlashCommandItems,
-        ...providerSlashCommandItems,
-        ...skillItems,
-      ];
+      const slashCommandItems = slashCommandItemsForPromptPosition(
+        [...builtInSlashCommandItems, ...providerSlashCommandItems, ...skillItems],
+        composerTrigger.rangeStart === 0,
+      );
       return searchSlashCommandItems(slashCommandItems, query);
     }
     if (composerTrigger.kind === "skill") {
@@ -1993,7 +1998,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       rangeStart: number,
       rangeEnd: number,
       replacement: string,
-      options?: { expectedText?: string; focusEditorAfterReplace?: boolean },
+      options?: {
+        expectedText?: string;
+        focusEditorAfterReplace?: boolean;
+        citationComment?: { start: number; sourceAnchor: AssistantCitationSourceAnchor };
+      },
     ): boolean => {
       const currentText = promptRef.current;
       const safeStart = Math.max(0, Math.min(currentText.length, rangeStart));
@@ -2007,6 +2016,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const next = replaceTextRange(promptRef.current, rangeStart, rangeEnd, replacement);
       const nextCursor = collapseExpandedComposerCursor(next.text, next.cursor);
       const nextExpandedCursor = expandCollapsedComposerCursor(next.text, nextCursor);
+      if (options?.citationComment) {
+        composerEditorRef.current?.requestCitationComment({
+          previousValue: currentText,
+          value: next.text,
+          citationStart: options.citationComment.start,
+          sourceAnchor: options.citationComment.sourceAnchor,
+        });
+      }
       promptRef.current = next.text;
       const activePendingQuestion = activePendingProgress?.activeQuestion;
       if (activePendingQuestion && activePendingUserInput) {
@@ -3228,28 +3245,62 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     void addComposerAttachments(files);
   };
 
-  const insertComposerTextAtEnd = (
-    text: string,
-    options?: { ensureLeadingBoundary?: boolean },
-  ): boolean => {
-    if (
-      text.length === 0 ||
-      isConnecting ||
-      isComposerApprovalState ||
-      pendingUserInputs.length > 0 ||
-      projectSelectionRequired
-    ) {
-      return false;
-    }
-    const prompt = promptRef.current;
-    const needsLeadingSpace =
-      (options?.ensureLeadingBoundary ?? false) && prompt.length > 0 && !/\s$/.test(prompt);
-    return applyPromptReplacement(
-      prompt.length,
-      prompt.length,
-      needsLeadingSpace ? ` ${text}` : text,
-    );
-  };
+  const insertComposerText = useCallback(
+    (
+      text: string,
+      position: "cursor" | "end",
+      options?: {
+        ensureLeadingBoundary?: boolean;
+        citationCommentAnchor?: AssistantCitationSourceAnchor;
+      },
+    ): boolean => {
+      if (
+        text.length === 0 ||
+        isConnecting ||
+        isComposerApprovalState ||
+        pendingUserInputs.length > 0 ||
+        projectSelectionRequired ||
+        (options?.citationCommentAnchor && !composerEditorRef.current)
+      ) {
+        return false;
+      }
+      const prompt = promptRef.current;
+      const cursor = position === "cursor" ? readComposerSnapshot().expandedCursor : prompt.length;
+      const needsLeadingSpace =
+        (options?.ensureLeadingBoundary ?? false) &&
+        cursor > 0 &&
+        !/\s/.test(prompt[cursor - 1] ?? "");
+      const rangeEnd = extendReplacementRangeForTrailingSpace(prompt, cursor, text);
+      return applyPromptReplacement(
+        cursor,
+        rangeEnd,
+        needsLeadingSpace ? ` ${text}` : text,
+        options?.citationCommentAnchor
+          ? {
+              citationComment: {
+                start: cursor + (needsLeadingSpace ? 1 : 0),
+                sourceAnchor: options.citationCommentAnchor,
+              },
+              focusEditorAfterReplace: false,
+            }
+          : undefined,
+      );
+    },
+    [
+      applyPromptReplacement,
+      isComposerApprovalState,
+      isConnecting,
+      pendingUserInputs.length,
+      projectSelectionRequired,
+      promptRef,
+      readComposerSnapshot,
+    ],
+  );
+
+  const insertComposerTextAtEnd = useCallback<ChatComposerHandle["insertTextAtEnd"]>(
+    (text, options) => insertComposerText(text, "end", options),
+    [insertComposerText],
+  );
 
   // File-tree drags land as mentions. Handled in the capture phase so the
   // editor never sees the drop; the load-bearing rules (native stop, "move"
@@ -3355,6 +3406,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         focusComposer();
       },
       insertTextAtEnd: insertComposerTextAtEnd,
+      citeAssistantText: (citation, sourceAnchor) =>
+        insertComposerText(
+          formatAssistantCitationForComposer(citation, citation.comment),
+          "cursor",
+          { ensureLeadingBoundary: true, citationCommentAnchor: sourceAnchor },
+        ),
       openModelPicker: () => {
         setIsComposerModelPickerOpen(true);
       },
@@ -3453,6 +3510,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerCursor,
       composerTerminalContexts,
       insertComposerDraftTerminalContext,
+      insertComposerText,
+      insertComposerTextAtEnd,
       promptRef,
       composerImagesRef,
       composerFilesRef,

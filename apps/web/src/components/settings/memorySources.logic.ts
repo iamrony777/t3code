@@ -9,6 +9,11 @@
  *    project's entry. The whole list is sent as a replacement patch on every
  *    edit.
  *
+ *    Updates and removes key on the *incoming* entry's identity: renaming a
+ *    path or projectRoot is a remove + add, and an update or remove that
+ *    matches nothing is a silent no-op that still returns a fresh array —
+ *    callers pre-check with {@link hasMemorySource} before writing settings.
+ *
  * 2. Per-project auto-detect preferences (`memoryAutoDetect`). The patch the
  *    UI sends is keyed by workspace root and always carries the fully merged
  *    per-key entry — decode fills `excluded: []` into every present key and

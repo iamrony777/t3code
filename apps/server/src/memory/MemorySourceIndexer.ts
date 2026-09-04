@@ -299,6 +299,11 @@ export const layer = Layer.effect(MemorySourceIndexer, make);
  * reads it the same way). Never fails: an absent indexer, unreadable
  * settings, or a missing folder all answer an empty list so the Project
  * settings preview can always render.
+ *
+ * The declared `MemorySourceIndexer` requirement above is advisory: the body
+ * reads the service via `Effect.serviceOption`, so the annotation — not the
+ * implementation — is what forces compositions to provide it. Do not drop it
+ * or the preview silently answers `[]` everywhere.
  */
 export const detectedFoldersPreview = ({
   projectRoot,

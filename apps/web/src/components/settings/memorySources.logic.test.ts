@@ -104,13 +104,43 @@ describe("applyMemorySourceListEdit", () => {
     expect(next).toEqual([otherRoot]);
   });
 
-  it("replaces the whole matched entry and returns a new array", () => {
-    const input = [source({ label: "Old" })];
+  it("updates a legacy rootless entry only when the edit also targets projectRoot ''", () => {
+    const legacy = source({ projectRoot: "", path: "~/.claude/CLAUDE.md", label: "Legacy" });
+    const next = applyMemorySourceListEdit([legacy], {
+      kind: "update",
+      entry: source({
+        projectRoot: "/home/dev/proj-a",
+        path: "~/.claude/CLAUDE.md",
+        label: "Rooted",
+      }),
+    });
+    // Same path but a real root: the inert legacy entry must stay untouched.
+    expect(next).toEqual([legacy]);
+
+    const rootlessEdit = applyMemorySourceListEdit([legacy], {
+      kind: "update",
+      entry: source({ projectRoot: "", path: "~/.claude/CLAUDE.md", label: "Rootless" }),
+    });
+    expect(rootlessEdit).toEqual([
+      source({ projectRoot: "", path: "~/.claude/CLAUDE.md", label: "Rootless" }),
+    ]);
+  });
+
+  it("returns the list unchanged when an update matches no (projectRoot, path)", () => {
+    const input = [source({ path: "memory/CLAUDE.md" })];
     const next = applyMemorySourceListEdit(input, {
       kind: "update",
-      entry: source({ label: "New" }),
+      entry: source({ path: "memory/docs.md", label: "New" }),
     });
-    expect(next).toEqual([source({ label: "New" })]);
+    expect(next).toEqual(input);
+    expect(next).not.toBe(input);
+  });
+
+  it("replaces the whole matched entry and returns a new array", () => {
+    const updated = source({ label: "New" });
+    const input = [source({ label: "Old" })];
+    const next = applyMemorySourceListEdit(input, { kind: "update", entry: updated });
+    expect(next).toEqual([updated]);
     expect(next).not.toBe(input);
     // The input array and entries are left untouched.
     expect(input).toEqual([source({ label: "Old" })]);

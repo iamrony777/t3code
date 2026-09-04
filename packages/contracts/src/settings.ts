@@ -821,7 +821,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   // Per-project auto-detect toggles, keyed by absolute workspace root.
-  memoryAutoDetect: Schema.Record(Schema.String, MemoryAutoDetectProjectEntry).pipe(
+  memoryAutoDetect: Schema.Record(TrimmedString, MemoryAutoDetectProjectEntry).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
 });
@@ -1029,9 +1029,12 @@ export const ServerSettingsPatch = Schema.Struct({
   // every time it edits. `deepMerge` replaces arrays wholesale, so a shorter
   // list removes entries instead of merging by index.
   memorySources: Schema.optionalKey(Schema.Array(MemorySourceEntry)),
-  // Whole-record replacement for the per-project auto-detect toggles, keyed
-  // by absolute workspace root. Same replacement semantics as `memorySources`.
-  memoryAutoDetect: Schema.optionalKey(Schema.Record(Schema.String, MemoryAutoDetectProjectEntry)),
+  // Per-key replacement keyed by absolute workspace root: for the project it
+  // edits, the UI sends the fully-merged entry with its `excluded` array
+  // intact. Decode fills `excluded: []` into every present entry and
+  // `deepMerge` replaces arrays wholesale, so a partial per-key patch (say,
+  // only `enabled`) would silently wipe that project's exclusions.
+  memoryAutoDetect: Schema.optionalKey(Schema.Record(TrimmedString, MemoryAutoDetectProjectEntry)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

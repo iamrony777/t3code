@@ -120,6 +120,17 @@ function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   return Exit.isSuccess(result) ? result.value : undefined;
 }
 
+/** Session system prompt: the preset, plus the federated memory block when set. */
+export function buildClaudeSystemPrompt(memoryContext: string | undefined): {
+  readonly type: "preset";
+  readonly preset: "claude_code";
+  readonly append?: string;
+} {
+  return memoryContext === undefined
+    ? { type: "preset", preset: "claude_code" }
+    : { type: "preset", preset: "claude_code", append: memoryContext };
+}
+
 type PromptQueueItem =
   | {
       readonly type: "message";
@@ -4353,7 +4364,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: buildClaudeSystemPrompt(input.memoryContext),
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.

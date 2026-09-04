@@ -44,7 +44,11 @@ import {
 } from "../ClaudeModelCatalog.testFixtures.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  buildClaudeSystemPrompt,
+  makeClaudeAdapter,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -275,6 +279,23 @@ async function readFirstPromptMessage(
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
+
+describe("buildClaudeSystemPrompt", () => {
+  it("keeps the preset without memory context", () => {
+    assert.deepEqual(buildClaudeSystemPrompt(undefined), {
+      type: "preset",
+      preset: "claude_code",
+    });
+  });
+
+  it("appends the memory block", () => {
+    assert.deepEqual(buildClaudeSystemPrompt("<memory>1. Claude</memory>"), {
+      type: "preset",
+      preset: "claude_code",
+      append: "<memory>1. Claude</memory>",
+    });
+  });
+});
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {

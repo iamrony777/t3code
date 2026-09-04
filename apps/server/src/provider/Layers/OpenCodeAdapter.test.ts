@@ -4910,6 +4910,58 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "gates the federated memory block to the first accepted prompt of a fresh session",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-memory-first-prompt");
+        const memoryContext = "<memory>1. Claude memory — ~/.claude/CLAUDE.md</memory>";
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+          memoryContext,
+        });
+
+        yield* adapter.sendTurn({
+          threadId,
+          input: "Fix the build",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+          memoryContext,
+        });
+
+        // The fresh-session flag is still up when the first prompt is
+        // submitted, so the memory block rides that prompt.
+        const firstPrompt = runtimeMock.state.promptCalls[0] as {
+          parts: Array<{ type: string; text: string }>;
+        };
+        NodeAssert.deepEqual(
+          firstPrompt.parts.filter((part) => part.type === "text").map((part) => part.text),
+          [`${memoryContext}\n\nFix the build`],
+        );
+
+        // Acceptance of the first prompt flips the flag, so the next prompt
+        // submission (a steer into the still-running session) stays clean.
+        yield* adapter.sendTurn({
+          threadId,
+          input: "Run the tests",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+          memoryContext,
+        });
+
+        const secondPrompt = runtimeMock.state.promptCalls[1] as {
+          parts: Array<{ type: string; text: string }>;
+        };
+        NodeAssert.deepEqual(
+          secondPrompt.parts.filter((part) => part.type === "text").map((part) => part.text),
+          ["Run the tests"],
+        );
+        NodeAssert.equal(runtimeMock.state.promptCalls.length, 2);
+      }),
+  );
+
   it.effect("treats lexically or physically identical directories as the same", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

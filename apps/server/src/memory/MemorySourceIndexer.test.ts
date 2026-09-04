@@ -332,4 +332,77 @@ describe("MemorySourceIndexer", () => {
       }),
     ),
   );
+
+  // The read-only preview RPC (`server.getDetectedMemoryFolders`) is backed by
+  // `detectedFoldersPreview`, the same detection path the service method runs,
+  // with the indexer resolved optionally so an absent composition answers []
+  // instead of rejecting. These exercise that RPC-facing effect.
+  it.effect("preview lists an existing claude auto-memory folder for a temp homePath", () =>
+    withTempDirs(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-config-" });
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
+        const memoryFolder = yield* createClaudeMemoryFolder(fs, configDir, root);
+
+        const folders = yield* MemorySourceIndexer.detectedFoldersPreview({
+          projectRoot: root,
+        }).pipe(
+          Effect.provide(
+            MemorySourceIndexer.layerTest({
+              providers: { claudeAgent: { enabled: true, homePath: configDir } },
+            }),
+          ),
+        );
+
+        expect(folders).toEqual([{ path: memoryFolder, label: claudeConfigDirLabel(configDir) }]);
+      }),
+    ),
+  );
+
+  it.effect("preview answers [] when no matching memory folder exists", () =>
+    withTempDirs(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-config-" });
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
+
+        const folders = yield* MemorySourceIndexer.detectedFoldersPreview({
+          projectRoot: root,
+        }).pipe(
+          Effect.provide(
+            MemorySourceIndexer.layerTest({
+              providers: { claudeAgent: { enabled: true, homePath: configDir } },
+            }),
+          ),
+        );
+
+        expect(folders).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("preview never rejects when the indexer is not provided", () =>
+    Effect.gen(function* () {
+      const folders = yield* MemorySourceIndexer.detectedFoldersPreview({
+        projectRoot: "/no/matter/which/root",
+      });
+      expect(folders).toEqual([]);
+    }),
+  );
+
+  it.effect("preview never rejects when settings carry no claude config dir", () =>
+    withTempDirs(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
+
+        const folders = yield* MemorySourceIndexer.detectedFoldersPreview({
+          projectRoot: root,
+        }).pipe(Effect.provide(MemorySourceIndexer.layerTest({})));
+
+        expect(folders).toEqual([]);
+      }),
+    ),
+  );
 });

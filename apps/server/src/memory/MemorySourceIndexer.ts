@@ -25,6 +25,7 @@
  */
 import { NodeServices } from "@effect/platform-node";
 import {
+  type DetectedMemoryFolder,
   ProviderDriverKind,
   type ServerSettings as ContractServerSettings,
   resolveProviderInstanceEnabled,
@@ -45,12 +46,6 @@ import { claudeConfigDirLabel, claudeMemoryFolderPath } from "./claudeMemoryFold
 import { assembleMemoryBlock, type ResolvedMemoryEntry } from "./memoryManifest.ts";
 
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
-
-/** A detected Claude auto-memory folder that exists on disk right now. */
-export interface DetectedMemoryFolder {
-  readonly path: string;
-  readonly label: string;
-}
 
 export class MemorySourceIndexer extends Context.Service<
   MemorySourceIndexer,
@@ -248,6 +243,29 @@ function readClaudeHomePath(config: unknown): string | undefined {
 }
 
 export const layer = Layer.effect(MemorySourceIndexer, make);
+
+/**
+ * Backing effect for the read-only preview RPC
+ * (`server.getDetectedMemoryFolders`): the existing detected Claude
+ * auto-memory folders for a project root, or `[]` when the indexer has not
+ * been provided in the current composition (it is optional — `ProviderService`
+ * reads it the same way). Never fails: an absent indexer, unreadable
+ * settings, or a missing folder all answer an empty list so the Project
+ * settings preview can always render.
+ */
+export const detectedFoldersPreview = ({
+  projectRoot,
+}: {
+  readonly projectRoot: string;
+}): Effect.Effect<ReadonlyArray<DetectedMemoryFolder>, never, MemorySourceIndexer> =>
+  Effect.serviceOption(MemorySourceIndexer).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.succeed([]),
+        onSome: (indexer) => indexer.detectedFoldersFor({ projectRoot }),
+      }),
+    ),
+  );
 
 /** Test layer: in-memory ServerSettings built from `overrides` plus NodeServices. */
 export const layerTest = (overrides: DeepPartial<ContractServerSettings> = {}) =>

@@ -60,6 +60,7 @@ import {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
+import { DetectedMemoryFolders, DetectedMemoryFoldersInput } from "./memory.ts";
 import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -285,6 +286,7 @@ export const WS_METHODS = {
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverGetDetectedMemoryFolders: "server.getDetectedMemoryFolders",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
@@ -424,6 +426,22 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
+
+/**
+ * Read-only preview of the Claude auto-memory folders that exist for a
+ * project root on the environment's disk. Deliberately a read RPC rather
+ * than part of the settings snapshot: the answer is machine-local disk state
+ * that changes outside T3 Code, so it is re-statted per request and never
+ * fails (an unreadable environment answers an empty list).
+ */
+export const WsServerGetDetectedMemoryFoldersRpc = Rpc.make(
+  WS_METHODS.serverGetDetectedMemoryFolders,
+  {
+    payload: DetectedMemoryFoldersInput,
+    success: DetectedMemoryFolders,
+    error: EnvironmentAuthorizationError,
+  },
+);
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
@@ -1059,6 +1077,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerGetDetectedMemoryFoldersRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,

@@ -102,6 +102,7 @@ import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as MemorySourceIndexer from "./memory/MemorySourceIndexer.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -1811,6 +1812,14 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        // Detected Claude auto-memory folders are machine-local disk state,
+        // answered per request and never rejected (empty on any failure).
+        [WS_METHODS.serverGetDetectedMemoryFolders]: ({ projectRoot }) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetDetectedMemoryFolders,
+            MemorySourceIndexer.detectedFoldersPreview({ projectRoot }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverUpdateSettings]: ({ patch }) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
@@ -2683,6 +2692,11 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                   Layer.provide(VcsProcess.layer),
                 ),
               ),
+              // The detected-memory-folders preview reads this on demand per
+              // request; provided in the handler path like SourceControlDiscovery
+              // above. The same layer also backs `ProviderService` in the reactor
+              // composition — each side builds its own stateless instance.
+              Layer.provide(MemorySourceIndexer.layer),
             ),
           ),
         );

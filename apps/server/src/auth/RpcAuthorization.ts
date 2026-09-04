@@ -41,6 +41,9 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRemoveKeybinding]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthOrchestrationOperateScope,
+  // Read-only preview of machine-local disk state, like every other read the
+  // settings page makes.
+  [WS_METHODS.serverGetDetectedMemoryFolders]: AuthOrchestrationReadScope,
   [WS_METHODS.serverDiscoverSourceControl]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetTraceDiagnostics]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetProcessDiagnostics]: AuthOrchestrationReadScope,

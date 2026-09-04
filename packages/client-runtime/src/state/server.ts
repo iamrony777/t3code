@@ -841,6 +841,18 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetResourceTelemetryHistory,
       staleTimeMs: 5_000,
     }),
+    // Detected Claude memory folders are machine-local disk state under the
+    // environment's Claude config dirs — not a shared/machine-independent
+    // setting — so the Project settings preview reads them over this RPC
+    // instead of caching them in the settings snapshot. Keyed by project
+    // root, one preview per project. Consumers force a fresh stat through the
+    // registry `refresh` (like usage summaries) rather than a long cache: the
+    // folders appear and disappear when the user edits them inside Claude.
+    detectedMemoryFolders: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:detected-memory-folders",
+      tag: WS_METHODS.serverGetDetectedMemoryFolders,
+      idleTtlMs: 60_000,
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {

@@ -776,7 +776,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const memoryContext = Option.isSome(memoryInjection)
           ? yield* memoryInjection.value.injectionFor({
               threadId: input.threadId,
-              projectRoot: input.cwd ?? "",
+              projectRoot: effectiveCwd ?? input.cwd ?? "",
               sessionStart: true,
             })
           : undefined;

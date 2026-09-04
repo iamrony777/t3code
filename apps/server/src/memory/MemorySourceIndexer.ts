@@ -51,10 +51,11 @@ export class MemorySourceIndexer extends Context.Service<
     sweepNow: Effect.Effect<ReadonlyMap<string, number | null>>;
     /**
      * The block to inject, or undefined when it is unchanged since the
-     * thread's last injection. `sessionStart` always yields the current block
-     * and never records the hash, so adapters that consume the block on the
-     * first turn still see it. Never fails: stat or settings failures yield
-     * no block rather than an error.
+     * thread's last injection. `sessionStart` always yields the current block,
+     * clears the thread's recorded hash, and never records, so a restarted
+     * session's first turn re-yields the block while adapters that consume the
+     * block on the first turn still see it. Never fails: stat or settings
+     * failures yield no block rather than an error.
      */
     injectionFor: (input: InjectionInput) => Effect.Effect<string | undefined, never>;
   }
@@ -142,7 +143,16 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.map((groups) => groups.flat()));
       const block = assembleMemoryBlock({ entries, nowMs: yield* Clock.currentTimeMillis });
       if (block === null) return undefined;
-      if (!sessionStart) {
+      if (sessionStart) {
+        // Forget the thread's recorded hash so the restarted session's first
+        // plain injection yields the block again.
+        yield* Ref.update(threadHashes, (recorded) => {
+          if (!recorded.has(threadId)) return recorded;
+          const next = new Map(recorded);
+          next.delete(threadId);
+          return next;
+        });
+      } else {
         const hash = NodeCrypto.createHash("sha256")
           .update(JSON.stringify(selectMemoryEntries(entries)))
           .digest("hex");

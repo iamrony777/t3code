@@ -55,6 +55,37 @@ describe("MemorySourceIndexer", () => {
     }).pipe(Effect.provide(MemorySourceIndexer.layerTest(sources))),
   );
 
+  it.effect("restart clears the recorded hash so the block re-yields on the next turn", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(MEMORY_FILE, "prod db access");
+      const indexer = yield* MemorySourceIndexer.MemorySourceIndexer;
+      yield* indexer.sweepNow;
+      const input = { threadId: "thread-restart", projectRoot: "/unused" } as const;
+
+      // Session start yields the block.
+      const start = yield* indexer.injectionFor({ ...input, sessionStart: true });
+      expect(start).toContain("1. Claude memory");
+
+      // The first plain injection yields the same block and records the hash.
+      const turn = yield* indexer.injectionFor({ ...input, sessionStart: false });
+      expect(turn).toBe(start);
+
+      // Unchanged block: deduped.
+      const deduped = yield* indexer.injectionFor({ ...input, sessionStart: false });
+      expect(deduped).toBeUndefined();
+
+      // Restart yields the block again.
+      const restart = yield* indexer.injectionFor({ ...input, sessionStart: true });
+      expect(restart).toBe(start);
+
+      // The restart cleared the recorded hash, so the next plain injection
+      // yields the same block again.
+      const afterRestart = yield* indexer.injectionFor({ ...input, sessionStart: false });
+      expect(afterRestart).toBe(start);
+    }).pipe(Effect.provide(MemorySourceIndexer.layerTest(sources))),
+  );
+
   it.effect("project-scoped sources resolve against the project root", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

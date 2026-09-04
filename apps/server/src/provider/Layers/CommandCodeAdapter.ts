@@ -59,6 +59,7 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { withMemoryContext } from "../../memory/memoryManifest.ts";
 import {
   commandCodeMcpAddArgs,
   commandCodeMcpRemoveArgs,
@@ -1454,7 +1455,10 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        return Effect.succeed({ ctx, prompt: rewriteCommandCodeCompactPrompt(input.input) });
+        const prompt = rewriteCommandCodeCompactPrompt(
+          withMemoryContext(input.input ?? "", input.memoryContext),
+        );
+        return Effect.succeed({ ctx, prompt });
       });
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>

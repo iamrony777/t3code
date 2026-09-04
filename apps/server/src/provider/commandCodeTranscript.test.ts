@@ -1,9 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { withMemoryContext } from "../memory/memoryManifest.ts";
 import {
   COMMAND_CODE_TRANSCRIPT_MAX_TAIL_BYTES,
   commandCodeProjectSlugCandidate,
@@ -170,4 +171,12 @@ it.layer(NodeServices.layer)("makeCommandCodeTranscriptReader", (it) => {
       }),
     ),
   );
+});
+
+describe("commandcode prompt memory context", () => {
+  it("prefixes the block before compact rewrite", () => {
+    expect(withMemoryContext("fix the build", "<memory>1. Claude</memory>")).toBe(
+      "<memory>1. Claude</memory>\n\nfix the build",
+    );
+  });
 });

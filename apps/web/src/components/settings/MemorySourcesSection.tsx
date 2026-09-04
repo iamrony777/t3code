@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 
-import { applyMemorySourceListEdit, hasMemorySourcePath } from "./memorySources.logic.ts";
+import { applyMemorySourceListEdit } from "./memorySources.logic.ts";
 
 export function MemorySourcesSection() {
   const settings = usePrimarySettings();
@@ -33,11 +33,12 @@ export function MemorySourcesSection() {
     const trimmedLabel = label.trim();
     const trimmedPath = path.trim();
     if (!trimmedLabel || !trimmedPath) return;
-    if (hasMemorySourcePath(sources, trimmedPath)) {
+    const existing = sources.find((entry) => entry.path === trimmedPath);
+    if (existing) {
       save(
         applyMemorySourceListEdit(sources, {
           kind: "update",
-          entry: { label: trimmedLabel, path: trimmedPath, scope, enabled: true },
+          entry: { ...existing, label: trimmedLabel },
         }),
       );
     } else {
@@ -100,7 +101,7 @@ export function MemorySourcesSection() {
         <Input
           value={path}
           onChange={(event) => setPath(event.target.value)}
-          placeholder="Path, e.g. ~/.claude/CLAUDE.md"
+          placeholder="Path, e.g. /home/you/.claude/CLAUDE.md"
           aria-label="Memory source path"
         />
         <Select

@@ -19,7 +19,7 @@ import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
-import { applyMemorySourceListEdit, hasMemorySourcePath } from "./memorySources.logic";
+import { applyMemorySourceListEdit } from "./memorySources.logic";
 
 const SCOPE_OPTIONS: ReadonlyArray<{
   readonly scope: MemorySourceScope;
@@ -63,11 +63,12 @@ export function SettingsMemorySourcesRouteScreen() {
     const trimmedLabel = label.trim();
     const trimmedPath = path.trim();
     if (!trimmedLabel || !trimmedPath) return;
-    if (hasMemorySourcePath(sources, trimmedPath)) {
+    const existing = sources.find((entry) => entry.path === trimmedPath);
+    if (existing) {
       save(
         applyMemorySourceListEdit(sources, {
           kind: "update",
-          entry: { label: trimmedLabel, path: trimmedPath, scope, enabled: true },
+          entry: { ...existing, label: trimmedLabel },
         }),
       );
     } else {
@@ -163,7 +164,7 @@ export function SettingsMemorySourcesRouteScreen() {
             <TextInput
               value={path}
               onChangeText={setPath}
-              placeholder="Path, e.g. ~/.claude/CLAUDE.md"
+              placeholder="Path, e.g. /home/you/.claude/CLAUDE.md"
               accessibilityLabel="Memory source path"
             />
             <View className="flex-row gap-2">

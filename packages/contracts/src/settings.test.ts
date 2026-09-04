@@ -516,52 +516,120 @@ describe("ServerSettingsPatch string normalization", () => {
   });
 });
 
-describe("memorySources", () => {
+describe("memorySources (per-project)", () => {
   it("defaults to an empty list", () => {
-    const decoded = Schema.decodeUnknownSync(ServerSettings)({});
-    expect(decoded.memorySources).toEqual([]);
+    expect(decodeServerSettings({}).memorySources).toEqual([]);
   });
 
   it("fills per-entry defaults and keeps explicit values", () => {
-    const decoded = Schema.decodeUnknownSync(ServerSettings)({
-      memorySources: [{ label: "Claude memory", path: "~/.claude/CLAUDE.md" }],
+    const decoded = decodeServerSettings({
+      memorySources: [
+        { label: "Claude memory", path: "~/.claude/CLAUDE.md", projectRoot: "/work/t3" },
+      ],
     });
     expect(decoded.memorySources).toEqual([
-      { label: "Claude memory", path: "~/.claude/CLAUDE.md", scope: "project", enabled: true },
+      {
+        label: "Claude memory",
+        path: "~/.claude/CLAUDE.md",
+        projectRoot: "/work/t3",
+        enabled: true,
+      },
     ]);
   });
 
-  it("accepts an explicit scope and harness", () => {
-    const decoded = Schema.decodeUnknownSync(ServerSettings)({
+  it("accepts an explicit enabled flag and an optional harness", () => {
+    const decoded = decodeServerSettings({
       memorySources: [
         {
           label: "taste",
           path: ".commandcode/taste.md",
-          scope: "global",
+          projectRoot: "/work/t3",
           harness: "commandcode",
           enabled: false,
         },
       ],
     });
     expect(decoded.memorySources[0]).toMatchObject({
-      scope: "global",
+      projectRoot: "/work/t3",
       harness: "commandcode",
       enabled: false,
     });
   });
 
+  it("tolerates legacy v1 entries whose machine-wide scope is dropped", () => {
+    const decoded = decodeServerSettings({
+      memorySources: [
+        { label: "Claude memory", path: "~/.claude/CLAUDE.md", scope: "global" },
+        { label: "Codex memory", path: "~/.codex/AGENTS.md", scope: "project" },
+      ],
+    });
+    // Legacy entries carry no project anchor, so they decode inert (""); the
+    // v1 `scope` key does not survive into the decoded shape.
+    expect(decoded.memorySources).toEqual([
+      { label: "Claude memory", path: "~/.claude/CLAUDE.md", projectRoot: "", enabled: true },
+      { label: "Codex memory", path: "~/.codex/AGENTS.md", projectRoot: "", enabled: true },
+    ]);
+    expect(decoded.memorySources[0]).not.toHaveProperty("scope");
+  });
+
   it("rejects a source with a missing label", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(ServerSettings)({ memorySources: [{ path: "x.md" }] }),
-    ).toThrow();
+    expect(() => decodeServerSettings({ memorySources: [{ path: "x.md" }] })).toThrow();
   });
 
   it("patches the full list as a replacement", () => {
     const patch = decodeServerSettingsPatch({
       memorySources: [
-        { label: "Codex memory", path: "~/.codex/AGENTS.md", scope: "global", harness: "codex" },
+        {
+          label: "Codex memory",
+          path: "~/.codex/AGENTS.md",
+          projectRoot: "/work/t3",
+          harness: "codex",
+        },
       ],
     });
-    expect(patch.memorySources).toHaveLength(1);
+    expect(patch.memorySources).toEqual([
+      {
+        label: "Codex memory",
+        path: "~/.codex/AGENTS.md",
+        projectRoot: "/work/t3",
+        harness: "codex",
+        enabled: true,
+      },
+    ]);
+  });
+});
+
+describe("memoryAutoDetect (per-project)", () => {
+  it("defaults to an empty record", () => {
+    expect(decodeServerSettings({}).memoryAutoDetect).toEqual({});
+  });
+
+  it("fills per-project entry defaults for an empty record value", () => {
+    const decoded = decodeServerSettings({
+      memoryAutoDetect: { "/work/t3": {} },
+    });
+    expect(decoded.memoryAutoDetect).toEqual({
+      "/work/t3": { enabled: true, excluded: [] },
+    });
+  });
+
+  it("keeps explicit toggles and exclusions", () => {
+    const decoded = decodeServerSettings({
+      memoryAutoDetect: {
+        "/work/t3": { enabled: false, excluded: ["AGENTS.md"] },
+      },
+    });
+    expect(decoded.memoryAutoDetect).toEqual({
+      "/work/t3": { enabled: false, excluded: ["AGENTS.md"] },
+    });
+  });
+
+  it("is accepted as an optional whole-record key on the patch", () => {
+    const patch = decodeServerSettingsPatch({
+      memoryAutoDetect: { "/work/t3": { enabled: false } },
+    });
+    expect(patch.memoryAutoDetect).toEqual({
+      "/work/t3": { enabled: false, excluded: [] },
+    });
   });
 });

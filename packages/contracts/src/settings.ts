@@ -685,21 +685,35 @@ export const BackgroundActivitySettings = Schema.Struct({
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
 /**
- * One memory source: a file where another harness persists its memory.
- * `path` is absolute for global entries and workspace-root-relative for
- * project entries. T3 only `stat()`s these paths — it never reads content.
+ * One memory source: a file where another harness persists its memory. Every
+ * source is anchored to the project rooted at its `projectRoot` (an absolute
+ * workspace root) — memory is per-project, never machine-wide. `path` is
+ * resolved against that root. A decoded `projectRoot` of `""` marks a legacy
+ * v1 entry that predates the per-project anchor and carried a machine-wide
+ * `scope` instead; such entries decode without error but are inert. T3 only
+ * `stat()`s these paths — it never reads content.
  */
-export const MemorySourceScope = Schema.Literals(["global", "project"]);
-export type MemorySourceScope = typeof MemorySourceScope.Type;
-
 export const MemorySourceEntry = Schema.Struct({
   label: TrimmedNonEmptyString,
   path: TrimmedNonEmptyString,
-  scope: MemorySourceScope.pipe(Schema.withDecodingDefault(Effect.succeed("project" as const))),
+  // Absolute workspace root the source belongs to. Decode default "" so v1
+  // entries (no anchor) stay inert instead of failing settings decode.
+  projectRoot: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   harness: Schema.optional(ProviderDriverKind),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type MemorySourceEntry = typeof MemorySourceEntry.Type;
+
+/**
+ * Per-project memory auto-detect preferences, keyed by absolute workspace
+ * root. `excluded` names files that must never be auto-detected for the
+ * project.
+ */
+export const MemoryAutoDetectProjectEntry = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  excluded: Schema.Array(TrimmedString).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+export type MemoryAutoDetectProjectEntry = typeof MemoryAutoDetectProjectEntry.Type;
 
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
@@ -805,6 +819,10 @@ export const ServerSettings = Schema.Struct({
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   memorySources: Schema.Array(MemorySourceEntry).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  // Per-project auto-detect toggles, keyed by absolute workspace root.
+  memoryAutoDetect: Schema.Record(Schema.String, MemoryAutoDetectProjectEntry).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
   ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
@@ -1011,6 +1029,9 @@ export const ServerSettingsPatch = Schema.Struct({
   // every time it edits. `deepMerge` replaces arrays wholesale, so a shorter
   // list removes entries instead of merging by index.
   memorySources: Schema.optionalKey(Schema.Array(MemorySourceEntry)),
+  // Whole-record replacement for the per-project auto-detect toggles, keyed
+  // by absolute workspace root. Same replacement semantics as `memorySources`.
+  memoryAutoDetect: Schema.optionalKey(Schema.Record(Schema.String, MemoryAutoDetectProjectEntry)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

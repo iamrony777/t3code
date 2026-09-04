@@ -6,8 +6,8 @@ import * as Path from "effect/Path";
 
 import * as MemorySourceIndexer from "./MemorySourceIndexer.ts";
 
-const MEMORY_FILE = `${NodeOS.tmpdir()}/t3-memory-source-test.md`;
-const MISSING_FILE = `${NodeOS.tmpdir()}/t3-memory-missing.md`;
+const MEMORY_FILE = `${NodeOS.tmpdir()}/t3-memory-source-test-${process.pid}-${Date.now()}.md`;
+const MISSING_FILE = `${NodeOS.tmpdir()}/t3-memory-missing-${process.pid}-${Date.now()}.md`;
 
 const sources = [
   { label: "Claude memory", path: MEMORY_FILE, scope: "global" as const, enabled: true },
@@ -59,7 +59,7 @@ describe("MemorySourceIndexer", () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
-      const root = yield* fs.makeTempDirectory({
+      const root = yield* fs.makeTempDirectoryScoped({
         directory: NodeOS.tmpdir(),
         prefix: "t3-memory-project-",
       });
@@ -73,6 +73,7 @@ describe("MemorySourceIndexer", () => {
       expect(block).toContain("CommandCode taste");
       expect(block).toContain(paths.join(root, "taste.md"));
     }).pipe(
+      Effect.scoped,
       Effect.provide(
         MemorySourceIndexer.layerTest([
           { label: "CommandCode taste", path: "taste.md", scope: "project", enabled: true },

@@ -37,30 +37,36 @@ export function formatUpdatedAgo(updatedAtMs: number | null, nowMs: number): str
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** Assemble the injected `<memory>` block, or null when no entry survives. */
-export function assembleMemoryBlock(input: {
-  readonly entries: ReadonlyArray<ResolvedMemoryEntry>;
-  readonly nowMs: number;
-}): string | null {
-  const listed = [...input.entries]
+/** Sort (harness, then recency desc) and cap the entries for the block. */
+export function selectMemoryEntries(
+  entries: ReadonlyArray<ResolvedMemoryEntry>,
+): Array<ResolvedMemoryEntry> {
+  return [...entries]
     .sort(
       (a, b) =>
         (a.harness ?? "").localeCompare(b.harness ?? "") ||
         (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0),
     )
-    .slice(0, MEMORY_MANIFEST_MAX_ENTRIES)
-    .map((entry, index) => {
-      const label =
-        entry.label.length > MEMORY_MANIFEST_MAX_LABEL_CHARS
-          ? `${entry.label.slice(0, MEMORY_MANIFEST_MAX_LABEL_CHARS - 1)}…`
-          : entry.label;
-      const path =
-        entry.path.length > MEMORY_MANIFEST_MAX_PATH_CHARS
-          ? `${entry.path.slice(0, MEMORY_MANIFEST_MAX_PATH_CHARS - 1)}…`
-          : entry.path;
-      const ago = formatUpdatedAgo(entry.updatedAtMs, input.nowMs);
-      return `${index + 1}. ${label} — ${path}${ago !== null ? ` — updated ${ago}` : ""}`;
-    });
+    .slice(0, MEMORY_MANIFEST_MAX_ENTRIES);
+}
+
+/** Assemble the injected `<memory>` block, or null when no entry survives. */
+export function assembleMemoryBlock(input: {
+  readonly entries: ReadonlyArray<ResolvedMemoryEntry>;
+  readonly nowMs: number;
+}): string | null {
+  const listed = selectMemoryEntries(input.entries).map((entry, index) => {
+    const label =
+      entry.label.length > MEMORY_MANIFEST_MAX_LABEL_CHARS
+        ? `${entry.label.slice(0, MEMORY_MANIFEST_MAX_LABEL_CHARS - 1)}…`
+        : entry.label;
+    const path =
+      entry.path.length > MEMORY_MANIFEST_MAX_PATH_CHARS
+        ? `${entry.path.slice(0, MEMORY_MANIFEST_MAX_PATH_CHARS - 1)}…`
+        : entry.path;
+    const ago = formatUpdatedAgo(entry.updatedAtMs, input.nowMs);
+    return `${index + 1}. ${label} — ${path}${ago !== null ? ` — updated ${ago}` : ""}`;
+  });
   if (listed.length === 0) return null;
   return `<memory>\n${MEMORY_BLOCK_INSTRUCTION}\n${listed.join("\n")}\n</memory>`;
 }

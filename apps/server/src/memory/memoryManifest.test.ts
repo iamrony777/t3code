@@ -7,6 +7,7 @@ import {
   MEMORY_MANIFEST_MAX_ENTRIES,
   MEMORY_MANIFEST_MAX_LABEL_CHARS,
   MEMORY_MANIFEST_MAX_PATH_CHARS,
+  selectMemoryEntries,
   withMemoryContext,
   type ResolvedMemoryEntry,
 } from "./memoryManifest.ts";
@@ -31,6 +32,44 @@ describe("formatUpdatedAgo", () => {
 
   it("returns null for an unavailable file", () => {
     expect(formatUpdatedAgo(null, NOW)).toBeNull();
+  });
+});
+
+describe("selectMemoryEntries", () => {
+  it("sorts by harness then recency desc", () => {
+    const selected = selectMemoryEntries([
+      entry({
+        label: "Newer codex",
+        harness: ProviderDriverKind.make("codex"),
+        updatedAtMs: NOW,
+      }),
+      entry({
+        label: "Claude memory",
+        harness: ProviderDriverKind.make("claudeAgent"),
+        updatedAtMs: NOW - 2 * 60_000,
+      }),
+      entry({
+        label: "Older codex",
+        harness: ProviderDriverKind.make("codex"),
+        updatedAtMs: NOW - 60_000,
+      }),
+    ]);
+    expect(selected.map(({ label }) => label)).toEqual([
+      "Claude memory",
+      "Newer codex",
+      "Older codex",
+    ]);
+  });
+
+  it("caps at MEMORY_MANIFEST_MAX_ENTRIES", () => {
+    const many = Array.from({ length: MEMORY_MANIFEST_MAX_ENTRIES + 3 }, (_, index) =>
+      entry({
+        label: `Source ${index}`,
+        harness: undefined,
+        updatedAtMs: NOW - index * 60_000,
+      }),
+    );
+    expect(selectMemoryEntries(many)).toHaveLength(MEMORY_MANIFEST_MAX_ENTRIES);
   });
 });
 

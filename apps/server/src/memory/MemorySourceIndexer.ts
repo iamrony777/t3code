@@ -12,6 +12,7 @@
  */
 import { NodeServices } from "@effect/platform-node";
 import type { MemorySourceEntry } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -25,7 +26,11 @@ import type * as Scope from "effect/Scope";
 import * as NodeCrypto from "node:crypto";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { assembleMemoryBlock, type ResolvedMemoryEntry } from "./memoryManifest.ts";
+import {
+  assembleMemoryBlock,
+  selectMemoryEntries,
+  type ResolvedMemoryEntry,
+} from "./memoryManifest.ts";
 
 const SWEEP_INTERVAL = "60 seconds" as const;
 
@@ -87,7 +92,14 @@ const make = Effect.gen(function* () {
     );
     yield* Ref.set(stateRef, { globalStats: stats });
     return stats;
-  }).pipe(Effect.orElseSucceed(() => new Map<string, number | null>()));
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("memory source sweep failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    Effect.orElseSucceed(() => new Map<string, number | null>()),
+  );
 
   const injectionFor = ({ threadId, projectRoot, sessionStart }: InjectionInput) =>
     Effect.gen(function* () {
@@ -131,7 +143,9 @@ const make = Effect.gen(function* () {
       const block = assembleMemoryBlock({ entries, nowMs: yield* Clock.currentTimeMillis });
       if (block === null) return undefined;
       if (!sessionStart) {
-        const hash = NodeCrypto.createHash("sha256").update(block).digest("hex");
+        const hash = NodeCrypto.createHash("sha256")
+          .update(JSON.stringify(selectMemoryEntries(entries)))
+          .digest("hex");
         const recorded = yield* Ref.get(threadHashes);
         if (recorded.get(threadId) === hash) return undefined;
         yield* Ref.set(threadHashes, new Map(recorded).set(threadId, hash));

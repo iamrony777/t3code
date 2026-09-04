@@ -515,3 +515,53 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
   });
 });
+
+describe("memorySources", () => {
+  it("defaults to an empty list", () => {
+    const decoded = Schema.decodeUnknownSync(ServerSettings)({});
+    expect(decoded.memorySources).toEqual([]);
+  });
+
+  it("fills per-entry defaults and keeps explicit values", () => {
+    const decoded = Schema.decodeUnknownSync(ServerSettings)({
+      memorySources: [{ label: "Claude memory", path: "~/.claude/CLAUDE.md" }],
+    });
+    expect(decoded.memorySources).toEqual([
+      { label: "Claude memory", path: "~/.claude/CLAUDE.md", scope: "project", enabled: true },
+    ]);
+  });
+
+  it("accepts an explicit scope and harness", () => {
+    const decoded = Schema.decodeUnknownSync(ServerSettings)({
+      memorySources: [
+        {
+          label: "taste",
+          path: ".commandcode/taste.md",
+          scope: "global",
+          harness: "commandcode",
+          enabled: false,
+        },
+      ],
+    });
+    expect(decoded.memorySources[0]).toMatchObject({
+      scope: "global",
+      harness: "commandcode",
+      enabled: false,
+    });
+  });
+
+  it("rejects a source with a missing label", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(ServerSettings)({ memorySources: [{ path: "x.md" }] }),
+    ).toThrow();
+  });
+
+  it("patches the full list as a replacement", () => {
+    const patch = decodeServerSettingsPatch({
+      memorySources: [
+        { label: "Codex memory", path: "~/.codex/AGENTS.md", scope: "global", harness: "codex" },
+      ],
+    });
+    expect(patch.memorySources).toHaveLength(1);
+  });
+});

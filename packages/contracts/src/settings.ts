@@ -19,9 +19,9 @@ import {
   PreviewZoomFactor,
 } from "./preview.ts";
 import {
+  ProviderDriverKind,
   ProviderInstanceConfig,
   ProviderInstanceId,
-  type ProviderDriverKind,
 } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -684,6 +684,23 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+/**
+ * One memory source: a file where another harness persists its memory.
+ * `path` is absolute for global entries and workspace-root-relative for
+ * project entries. T3 only `stat()`s these paths — it never reads content.
+ */
+export const MemorySourceScope = Schema.Literals(["global", "project"]);
+export type MemorySourceScope = typeof MemorySourceScope.Type;
+
+export const MemorySourceEntry = Schema.Struct({
+  label: TrimmedNonEmptyString,
+  path: TrimmedNonEmptyString,
+  scope: MemorySourceScope.pipe(Schema.withDecodingDefault(Effect.succeed("project" as const))),
+  harness: Schema.optional(ProviderDriverKind),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type MemorySourceEntry = typeof MemorySourceEntry.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -786,6 +803,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  memorySources: Schema.Array(MemorySourceEntry).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -987,6 +1007,10 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  // Whole-list replacement: the memory sources UI sends the fully-formed list
+  // every time it edits. `deepMerge` replaces arrays wholesale, so a shorter
+  // list removes entries instead of merging by index.
+  memorySources: Schema.optionalKey(Schema.Array(MemorySourceEntry)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

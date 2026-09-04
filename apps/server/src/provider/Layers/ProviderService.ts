@@ -59,6 +59,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as MemorySourceIndexer from "../../memory/MemorySourceIndexer.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
@@ -769,10 +770,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        const memoryInjection = yield* Effect.serviceOption(
+          MemorySourceIndexer.MemorySourceIndexer,
+        );
+        const memoryContext = Option.isSome(memoryInjection)
+          ? yield* memoryInjection.value.injectionFor({
+              threadId: input.threadId,
+              projectRoot: input.cwd ?? "",
+              sessionStart: true,
+            })
+          : undefined;
+        const startInput = memoryContext === undefined ? input : { ...input, memoryContext };
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
-            ...input,
+            ...startInput,
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
@@ -913,7 +925,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // rather than issuing a new one: sessions that go a long time between
       // browser tool calls used to lose the toolkit outright.
       yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-      const turn = yield* routed.adapter.sendTurn(input);
+      const memoryInjection = yield* Effect.serviceOption(MemorySourceIndexer.MemorySourceIndexer);
+      const memoryContext = Option.isSome(memoryInjection)
+        ? yield* memoryInjection.value.injectionFor({
+            threadId: input.threadId,
+            projectRoot: input.cwd ?? "",
+            sessionStart: false,
+          })
+        : undefined;
+      const inputWithMemory = memoryContext === undefined ? input : { ...input, memoryContext };
+      const turn = yield* routed.adapter.sendTurn(inputWithMemory);
       const turnBinding = {
         threadId: input.threadId,
         provider: routed.adapter.provider,

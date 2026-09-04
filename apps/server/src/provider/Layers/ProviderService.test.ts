@@ -72,6 +72,7 @@ import {
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
+import * as MemorySourceIndexer from "../../memory/MemorySourceIndexer.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
@@ -90,6 +91,8 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const COMMAND_CODE_DRIVER = ProviderDriverKind.make("commandcode");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+
+const MEMORY_FILE = `${NodeOS.tmpdir()}/t3-memory-provider-${process.pid}-${Date.now()}.md`;
 
 const assistantQuoteText = 'Keep the shared parser for "résumé".\nPreserve line breaks.';
 const assistantCitation = {
@@ -1140,6 +1143,70 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
     }),
+  );
+
+  it.effect("startSession and sendTurn attach the memory block from configured sources", () =>
+    Effect.gen(function* () {
+      NodeFS.writeFileSync(MEMORY_FILE, "ProviderService memory fixture");
+      const provider = yield* ProviderService.ProviderService;
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      const session = yield* provider.startSession(asThreadId("thread-memory-source"), {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-memory-source"),
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      assert.equal(session.provider, "codex");
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      const startInput = routing.codex.startSession.mock.calls[0]?.[0];
+      assert.equal(typeof startInput === "object" && startInput !== null, true);
+      if (startInput && typeof startInput === "object") {
+        const memoryContext = startInput.memoryContext;
+        assert.equal(
+          typeof memoryContext,
+          "string",
+          "startSession input should carry memoryContext",
+        );
+        if (typeof memoryContext === "string") {
+          assert.include(memoryContext, "1. Claude memory");
+          assert.include(memoryContext, MEMORY_FILE);
+        }
+      }
+
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      const turnInput = routing.codex.sendTurn.mock.calls[0]?.[0];
+      assert.equal(typeof turnInput === "object" && turnInput !== null, true);
+      if (turnInput && typeof turnInput === "object") {
+        const memoryContext = turnInput.memoryContext;
+        assert.equal(typeof memoryContext, "string", "sendTurn input should carry memoryContext");
+        if (typeof memoryContext === "string") {
+          assert.include(memoryContext, "1. Claude memory");
+          assert.include(memoryContext, MEMORY_FILE);
+        }
+      }
+
+      NodeFS.rmSync(MEMORY_FILE, { force: true });
+    }).pipe(
+      Effect.provide(
+        MemorySourceIndexer.layerTest([
+          {
+            label: "Claude memory",
+            path: MEMORY_FILE,
+            scope: "global",
+            enabled: true,
+          },
+        ]),
+      ),
+    ),
   );
 
   it.effect("routes feedback to the Codex adapter and returns its feedback ID", () =>

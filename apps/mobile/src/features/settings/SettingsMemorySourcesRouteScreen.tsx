@@ -97,6 +97,11 @@ export function SettingsMemorySourcesRouteScreen() {
         contentContainerClassName="gap-3 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
+        {reference ? (
+          <Text className="px-2 text-sm leading-normal text-foreground-muted">
+            Editing memory sources for {reference.label}
+          </Text>
+        ) : null}
         {!ready ? (
           <Text className="px-2 text-sm leading-normal text-foreground-muted">
             Connect an environment to manage memory sources.

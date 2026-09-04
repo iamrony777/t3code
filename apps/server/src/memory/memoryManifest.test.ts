@@ -5,6 +5,8 @@ import {
   assembleMemoryBlock,
   formatUpdatedAgo,
   MEMORY_MANIFEST_MAX_ENTRIES,
+  MEMORY_MANIFEST_MAX_LABEL_CHARS,
+  MEMORY_MANIFEST_MAX_PATH_CHARS,
   withMemoryContext,
   type ResolvedMemoryEntry,
 } from "./memoryManifest.ts";
@@ -100,7 +102,50 @@ describe("assembleMemoryBlock", () => {
     const lines = block?.split("\n") ?? [];
     const listLines = lines.filter((line) => /^\d+\. /.test(line));
     expect(listLines).toHaveLength(MEMORY_MANIFEST_MAX_ENTRIES);
-    expect(listLines.every((line) => line.length < 140)).toBe(true);
+    const truncatedLabel =
+      `Source ${"x".repeat(100)} 0`.slice(0, MEMORY_MANIFEST_MAX_LABEL_CHARS - 1) + "…";
+    expect(listLines[0]).toBe(`1. ${truncatedLabel} — /sources/0.md — updated just now`);
+  });
+
+  it("truncates long paths", () => {
+    const truncatedPath = "p".repeat(MEMORY_MANIFEST_MAX_PATH_CHARS - 1) + "…";
+    const block = assembleMemoryBlock({
+      entries: [entry({ path: "p".repeat(300) })],
+      nowMs: NOW,
+    });
+    expect(block).toBe(
+      [
+        "<memory>",
+        "Other agent harnesses keep persistent memory files on this machine. Read any that are relevant before acting. Do not modify files owned by other harnesses.",
+        `1. Claude memory — ${truncatedPath} — updated 5m ago`,
+        "</memory>",
+      ].join("\n"),
+    );
+  });
+
+  it("sorts null-mtime entries last without a freshness suffix", () => {
+    const block = assembleMemoryBlock({
+      entries: [
+        entry({
+          label: "Unavailable",
+          path: "unavailable.md",
+          harness: undefined,
+          updatedAtMs: null,
+        }),
+        entry({
+          label: "Dated",
+          path: "dated.md",
+          harness: undefined,
+          updatedAtMs: NOW - 60_000,
+        }),
+      ],
+      nowMs: NOW,
+    });
+    const lines = block?.split("\n") ?? [];
+    const listLines = lines.filter((line) => /^\d+\. /.test(line));
+    expect(listLines[0]).toBe("1. Dated — dated.md — updated 1m ago");
+    expect(listLines[1]).toBe("2. Unavailable — unavailable.md");
+    expect(listLines[1]).not.toContain("updated");
   });
 });
 

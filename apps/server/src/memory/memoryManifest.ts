@@ -1,7 +1,7 @@
 /**
- * Pure assembly of the injected memory block: sorting, capping, truncation,
- * and formatting. No I/O and no Effect, so the module is unit-testable in
- * isolation.
+ * Pure assembly of the injected memory block: sorting, capping, truncating
+ * labels and paths to fixed lengths, and formatting. No I/O and no Effect, so
+ * the module is unit-testable in isolation.
  *
  * The block carries labels, paths, and freshness only. T3 never reads memory
  * file *content* into prompts: secrets stay in the files, and each agent
@@ -13,6 +13,7 @@ import type { MemorySourceEntry } from "@t3tools/contracts";
 
 export const MEMORY_MANIFEST_MAX_ENTRIES = 10;
 export const MEMORY_MANIFEST_MAX_LABEL_CHARS = 80;
+export const MEMORY_MANIFEST_MAX_PATH_CHARS = 200;
 
 export interface ResolvedMemoryEntry {
   readonly label: string;
@@ -53,8 +54,12 @@ export function assembleMemoryBlock(input: {
         entry.label.length > MEMORY_MANIFEST_MAX_LABEL_CHARS
           ? `${entry.label.slice(0, MEMORY_MANIFEST_MAX_LABEL_CHARS - 1)}…`
           : entry.label;
+      const path =
+        entry.path.length > MEMORY_MANIFEST_MAX_PATH_CHARS
+          ? `${entry.path.slice(0, MEMORY_MANIFEST_MAX_PATH_CHARS - 1)}…`
+          : entry.path;
       const ago = formatUpdatedAgo(entry.updatedAtMs, input.nowMs);
-      return `${index + 1}. ${label} — ${entry.path}${ago !== null ? ` — updated ${ago}` : ""}`;
+      return `${index + 1}. ${label} — ${path}${ago !== null ? ` — updated ${ago}` : ""}`;
     });
   if (listed.length === 0) return null;
   return `<memory>\n${MEMORY_BLOCK_INSTRUCTION}\n${listed.join("\n")}\n</memory>`;

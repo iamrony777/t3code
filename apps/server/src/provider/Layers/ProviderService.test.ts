@@ -1179,6 +1179,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       yield* provider.sendTurn({
         threadId: session.threadId,
+        // Memory is per project in rev 2: a turn only carries the block when
+        // it names the project cwd the source is anchored to.
+        cwd: "/tmp/project",
         input: "hello",
         attachments: [],
       });
@@ -1197,14 +1200,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
       NodeFS.rmSync(MEMORY_FILE, { force: true });
     }).pipe(
       Effect.provide(
-        MemorySourceIndexer.layerTest([
-          {
-            label: "Claude memory",
-            path: MEMORY_FILE,
-            scope: "global",
-            enabled: true,
-          },
-        ]),
+        MemorySourceIndexer.layerTest({
+          // Detection off keeps this hermetic: only the anchored manual source
+          // shapes the injected block for the "/tmp/project" session cwd.
+          providers: { claudeAgent: { enabled: false } },
+          memorySources: [
+            {
+              label: "Claude memory",
+              path: MEMORY_FILE,
+              projectRoot: "/tmp/project",
+              enabled: true,
+            },
+          ],
+        }),
       ),
     ),
   );

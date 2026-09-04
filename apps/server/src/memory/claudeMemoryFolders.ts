@@ -21,9 +21,8 @@
  *
  * These helpers are intentionally pure string logic: no Effect, no I/O, no
  * path library, so they run identically in tests and on every platform. A
- * mismatch with any future Claude Code behavior is harmless by design: the
- * worst case is that a memory folder is simply not detected — never damage to
- * Claude's files.
+ * mismatch with future Claude Code naming only means a folder is missed or
+ * misattributed — T3 never modifies or reads memory content.
  *
  * @module claudeMemoryFolders
  */

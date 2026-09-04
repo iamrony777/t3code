@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import { withMemoryContext } from "../../memory/memoryManifest.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -4891,6 +4892,21 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(isOpenCodeNotFound({ cause: { response: { status: 401 } } }), false);
       NodeAssert.equal(isOpenCodeNotFound(new Error("network error (no response)")), false);
       NodeAssert.equal(isOpenCodeNotFound(undefined), false);
+    }),
+  );
+
+  it.effect("prefixes the federated memory block onto the turn text", () =>
+    Effect.sync(() => {
+      NodeAssert.equal(
+        withMemoryContext("fix the build", "<memory>1. Claude</memory>"),
+        "<memory>1. Claude</memory>\n\nfix the build",
+      );
+    }),
+  );
+
+  it.effect("leaves turn text unchanged when no memory block is provided", () =>
+    Effect.sync(() => {
+      NodeAssert.equal(withMemoryContext("fix the build", undefined), "fix the build");
     }),
   );
 

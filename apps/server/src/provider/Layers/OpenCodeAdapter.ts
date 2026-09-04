@@ -34,6 +34,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { withMemoryContext } from "../../memory/memoryManifest.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -349,6 +350,14 @@ interface OpenCodeSessionContext {
   pendingRequestRecovery: OpenCodePendingRequestRecovery | undefined;
   promptGeneration: number;
   promptAdmission: OpenCodePromptAdmission | undefined;
+  /**
+   * True while this context's session was freshly created and its first
+   * prompt has not been accepted yet. OpenCode has no system-prompt slot, so
+   * the federated memory block rides that first prompt — and only it:
+   * resumed/forked sessions already carry their history, and later turns
+   * must not repeat the block. Flipped once the first prompt is accepted.
+   */
+  freshSession: boolean;
   readonly promptSemaphore: Semaphore.Semaphore;
   readonly firstConnection: Deferred.Deferred<void, ProviderAdapterRequestError>;
   /**
@@ -2462,7 +2471,7 @@ export function makeOpenCodeAdapter(
                       permission: buildOpenCodePermissionRules(input.runtimeMode),
                     }),
                   );
-                  return { openCodeSession: reusable, created: false };
+                  return { openCodeSession: reusable, created: false, fresh: false };
                 }
 
                 // The session lives under a different cwd (e.g. the thread
@@ -2489,7 +2498,9 @@ export function makeOpenCodeAdapter(
                       permission: buildOpenCodePermissionRules(input.runtimeMode),
                     }),
                   );
-                  return { openCodeSession: forked, created: true };
+                  // The fork carries the full history, so its first prompt
+                  // is not the conversation's first prompt.
+                  return { openCodeSession: forked, created: true, fresh: false };
                 }
 
                 if (resumeSessionId) {
@@ -2509,7 +2520,7 @@ export function makeOpenCodeAdapter(
                     detail: "OpenCode session.create returned no session payload.",
                   });
                 }
-                return { openCodeSession: createdSession.data, created: true };
+                return { openCodeSession: createdSession.data, created: true, fresh: true };
               });
 
               return {
@@ -2518,6 +2529,7 @@ export function makeOpenCodeAdapter(
                 client,
                 openCodeSession: resolved.openCodeSession,
                 created: resolved.created,
+                fresh: resolved.fresh,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
@@ -2576,6 +2588,7 @@ export function makeOpenCodeAdapter(
           pendingRequestRecovery: undefined,
           promptGeneration: 0,
           promptAdmission: undefined,
+          freshSession: started.fresh,
           promptSemaphore: Semaphore.makeUnsafe(1),
           firstConnection: Deferred.makeUnsafe<void, ProviderAdapterRequestError>(),
           stopped: yield* Ref.make(false),
@@ -2777,6 +2790,16 @@ export function makeOpenCodeAdapter(
             return yield* Effect.interrupt;
           }
 
+          // OpenCode has no system-prompt slot, so the federated memory
+          // block rides the first prompt of a freshly created session.
+          // Resumed/forked sessions already carry their history, and later
+          // turns must not repeat the block.
+          const promptText =
+            text !== undefined
+              ? withMemoryContext(text, context.freshSession ? input.memoryContext : undefined)
+              : context.freshSession
+                ? input.memoryContext
+                : undefined;
           let promptTimedOut = false;
           const promptEffect = runOpenCodeSdk("session.promptAsync", (signal) =>
             context.client.session.promptAsync(
@@ -2786,11 +2809,22 @@ export function makeOpenCodeAdapter(
                 model: parsedModel,
                 ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                 ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-                parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+                parts: [
+                  ...(promptText ? [{ type: "text" as const, text: promptText }] : []),
+                  ...fileParts,
+                ],
               },
               { signal },
             ),
           ).pipe(
+            Effect.tap(() =>
+              // One-shot: flip once the first prompt is accepted, so steers
+              // and later turns keep their text. A failed submission leaves
+              // the flag up and the retry still carries the block.
+              Effect.sync(() => {
+                context.freshSession = false;
+              }),
+            ),
             Effect.timeout("10 seconds"),
             Effect.catchTags({
               OpenCodeRuntimeError: (cause) => Effect.fail(toRequestError(cause)),

@@ -175,7 +175,7 @@ it.layer(NodeServices.layer)("makeCommandCodeTranscriptReader", (it) => {
 });
 
 describe("commandcode prompt memory context", () => {
-  it("prefixes the block before compact rewrite", () => {
+  it("prepends the block with a blank-line separator", () => {
     expect(withMemoryContext("fix the build", "<memory>1. Claude</memory>")).toBe(
       "<memory>1. Claude</memory>\n\nfix the build",
     );

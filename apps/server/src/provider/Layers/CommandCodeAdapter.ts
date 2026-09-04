@@ -1456,7 +1456,7 @@ export function makeCommandCodeAdapter(
           );
         }
         const prompt = withMemoryContext(
-          rewriteCommandCodeCompactPrompt(input.input ?? ""),
+          rewriteCommandCodeCompactPrompt(input.input),
           input.memoryContext,
         );
         return Effect.succeed({ ctx, prompt });

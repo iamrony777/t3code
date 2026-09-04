@@ -354,7 +354,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
     ),
   );
 
-  it.effect("rewrites a standalone /compact and loads the compact mod", () =>
+  it.effect("prepends memory context before the /compact rewrite and loads the compact mod", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -399,10 +399,16 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           cwd: dir,
           runtimeMode: "approval-required",
         });
-        yield* adapter.sendTurn({ threadId, input: "/compact" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "/compact",
+          memoryContext: "<memory>1. Claude</memory>",
+        });
         yield* Fiber.join(completionFiber);
 
-        expect((yield* fs.readFileString(stdinLog)).trim()).toBe(COMMAND_CODE_COMPACT_PROMPT);
+        expect((yield* fs.readFileString(stdinLog)).trim()).toBe(
+          "<memory>1. Claude</memory>\n\n" + COMMAND_CODE_COMPACT_PROMPT,
+        );
         expect((yield* fs.readFileString(argsLog)).trim()).toContain("--mod");
       }),
     ),

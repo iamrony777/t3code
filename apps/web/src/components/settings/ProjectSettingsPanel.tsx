@@ -114,6 +114,7 @@ import {
   canPickExternalProjectFavicon,
   ProjectFaviconPickerDialog,
 } from "./ProjectFaviconPickerDialog";
+import { ProjectMemorySourcesSection } from "./ProjectMemorySourcesSection";
 import { projectGroupTitleNeedsUpdate } from "./ProjectSettingsPanel.logic";
 
 export const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> = {
@@ -1175,6 +1176,11 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
             />
           ) : null}
         </SettingsSection>
+
+        <ProjectMemorySourcesSection
+          environmentId={selectedCheckout.environmentId}
+          workspaceRoot={selectedCheckout.workspaceRoot}
+        />
 
         <SettingsSection title="Danger">
           <SettingsRow

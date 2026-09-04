@@ -199,6 +199,38 @@ describe("buildTurnStartParams", () => {
     NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
   });
 
+  it.effect("passes the memory block through to the developer instructions", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Continue",
+        interactionMode: "default",
+        memoryContext: "<memory>1. Claude memory — ~/.claude/CLAUDE.md</memory>",
+      });
+
+      const instructions = params.collaborationMode?.settings.developer_instructions;
+      NodeAssert.ok(instructions?.includes("<memory>1. Claude memory"));
+      NodeAssert.match(instructions ?? "", /<\/memory>\s*$/);
+    }),
+  );
+
+  it.effect("omits the memory block from the developer instructions when absent", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Continue",
+        interactionMode: "default",
+      });
+
+      NodeAssert.doesNotMatch(
+        params.collaborationMode?.settings.developer_instructions ?? "",
+        /<memory>/,
+      );
+    }),
+  );
+
   it.effect("routes approvals to the auto reviewer in auto mode", () =>
     Effect.gen(function* () {
       const params = yield* buildTurnStartParams({
@@ -496,6 +528,28 @@ describe("buildCodexDeveloperInstructions", () => {
 
     NodeAssert.match(instructions, /as gpt 5\.3 codex with high effort reasoning effort/);
     NodeAssert.doesNotMatch(instructions, /<runtime_info>[^<]*\n/);
+  });
+
+  it("appends the memory block when provided", () => {
+    const instructions = buildCodexDeveloperInstructions(
+      "default",
+      { model: "gpt-5.3-codex", reasoningEffort: "medium" },
+      true,
+      "<memory>1. Claude memory — ~/.claude/CLAUDE.md</memory>",
+    );
+
+    NodeAssert.match(instructions, /<memory>1\. Claude memory/);
+    NodeAssert.match(instructions, /<\/memory>\s*$/);
+  });
+
+  it("omits the block when not provided", () => {
+    const instructions = buildCodexDeveloperInstructions(
+      "default",
+      { model: "gpt-5.3-codex", reasoningEffort: "medium" },
+      true,
+    );
+
+    NodeAssert.doesNotMatch(instructions, /<memory>/);
   });
 });
 

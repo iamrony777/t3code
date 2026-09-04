@@ -76,6 +76,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  // Workspace cwd for turn-time memory resolution; not the session's frozen cwd.
   cwd: Schema.optional(TrimmedNonEmptyString),
   memoryContext: Schema.optional(TrimmedNonEmptyString),
 });

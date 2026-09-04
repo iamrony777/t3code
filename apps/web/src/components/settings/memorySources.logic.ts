@@ -9,6 +9,14 @@ export type MemorySourceListEdit =
   | { readonly kind: "update"; readonly entry: MemorySourceEntry }
   | { readonly kind: "remove"; readonly path: string };
 
+/** True when a source with the same path already exists in the list. */
+export function hasMemorySourcePath(
+  sources: ReadonlyArray<MemorySourceEntry>,
+  path: string,
+): boolean {
+  return sources.some((entry) => entry.path === path);
+}
+
 export function applyMemorySourceListEdit(
   sources: ReadonlyArray<MemorySourceEntry>,
   edit: MemorySourceListEdit,

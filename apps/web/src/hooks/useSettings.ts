@@ -364,6 +364,9 @@ function useConnectedEnvironmentIds(): ReadonlyArray<EnvironmentId> {
  * are written to every connected environment, not only the target, so a user
  * preference does not silently drift between machines. Client keys go through
  * client persistence.
+ *
+ * The returned promise settles once every server write it started has
+ * settled, so callers can reflect an in-flight save in the UI.
  */
 function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   const persistServerSettings = useAtomCommand(
@@ -372,16 +375,19 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   );
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
   const updateSettings = useCallback(
-    (patch: UnifiedSettingsPatch) => {
+    (patch: UnifiedSettingsPatch): Promise<void> => {
       const { serverPatch, clientPatch } = splitPatch(patch);
+      const serverWrites: Array<Promise<unknown>> = [];
 
       if (Object.keys(serverPatch).length > 0) {
         const { sharedPatch, localPatch } = splitSharedServerPatch(serverPatch);
         if (environmentId && Object.keys(localPatch).length > 0) {
-          void persistServerSettings({
-            environmentId,
-            input: { patch: localPatch },
-          });
+          serverWrites.push(
+            persistServerSettings({
+              environmentId,
+              input: { patch: localPatch },
+            }),
+          );
         } else {
           // Dropping the write silently leaves the control looking saved.
           toastManager.add({
@@ -396,10 +402,12 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
             targets.add(environmentId);
           }
           for (const targetId of targets) {
-            void persistServerSettings({
-              environmentId: targetId,
-              input: { patch: sharedPatch },
-            });
+            serverWrites.push(
+              persistServerSettings({
+                environmentId: targetId,
+                input: { patch: sharedPatch },
+              }),
+            );
           }
         }
       }
@@ -409,6 +417,7 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           ...clientPatch,
         });
       }
+      return Promise.allSettled(serverWrites).then(() => undefined);
     },
     [connectedEnvironmentIds, environmentId, persistServerSettings],
   );

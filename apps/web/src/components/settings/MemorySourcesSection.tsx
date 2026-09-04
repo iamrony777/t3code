@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 
-import { applyMemorySourceListEdit } from "./memorySources.logic.ts";
+import { applyMemorySourceListEdit, hasMemorySourcePath } from "./memorySources.logic.ts";
 
 export function MemorySourcesSection() {
   const settings = usePrimarySettings();
@@ -22,19 +22,32 @@ export function MemorySourcesSection() {
   const [label, setLabel] = useState("");
   const [path, setPath] = useState("");
   const [scope, setScope] = useState<MemorySourceScope>("global");
+  const [pending, setPending] = useState(false);
 
   const save = (next: typeof sources) => {
-    updateSettings({ memorySources: next });
+    setPending(true);
+    void updateSettings({ memorySources: next }).finally(() => setPending(false));
   };
 
   const add = () => {
-    if (!label.trim() || !path.trim()) return;
-    save(
-      applyMemorySourceListEdit(sources, {
-        kind: "add",
-        entry: { label: label.trim(), path: path.trim(), scope, enabled: true },
-      }),
-    );
+    const trimmedLabel = label.trim();
+    const trimmedPath = path.trim();
+    if (!trimmedLabel || !trimmedPath) return;
+    if (hasMemorySourcePath(sources, trimmedPath)) {
+      save(
+        applyMemorySourceListEdit(sources, {
+          kind: "update",
+          entry: { label: trimmedLabel, path: trimmedPath, scope, enabled: true },
+        }),
+      );
+    } else {
+      save(
+        applyMemorySourceListEdit(sources, {
+          kind: "add",
+          entry: { label: trimmedLabel, path: trimmedPath, scope, enabled: true },
+        }),
+      );
+    }
     setLabel("");
     setPath("");
   };
@@ -51,6 +64,7 @@ export function MemorySourcesSection() {
               type="button"
               size="sm"
               variant="outline"
+              disabled={pending}
               onClick={() =>
                 save(
                   applyMemorySourceListEdit(sources, {
@@ -66,6 +80,7 @@ export function MemorySourcesSection() {
               type="button"
               size="sm"
               variant="outline"
+              disabled={pending}
               onClick={() =>
                 save(applyMemorySourceListEdit(sources, { kind: "remove", path: source.path }))
               }
@@ -108,7 +123,7 @@ export function MemorySourcesSection() {
             </SelectItem>
           </SelectPopup>
         </Select>
-        <Button type="button" onClick={add}>
+        <Button type="button" disabled={pending} onClick={add}>
           Add source
         </Button>
       </div>

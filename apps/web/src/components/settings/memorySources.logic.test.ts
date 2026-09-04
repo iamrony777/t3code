@@ -33,5 +33,10 @@ describe("applyMemorySourceListEdit", () => {
       path: "a.md",
     });
     expect(next).toEqual([other]);
+    // The input entries and array must be left untouched.
+    expect([original, other]).toEqual([
+      source({ path: "a.md", label: "A" }),
+      source({ path: "b.md", label: "B" }),
+    ]);
   });
 });

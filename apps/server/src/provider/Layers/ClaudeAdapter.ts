@@ -126,9 +126,9 @@ export function buildClaudeSystemPrompt(memoryContext: string | undefined): {
   readonly preset: "claude_code";
   readonly append?: string;
 } {
-  return memoryContext === undefined
-    ? { type: "preset", preset: "claude_code" }
-    : { type: "preset", preset: "claude_code", append: memoryContext };
+  return memoryContext
+    ? { type: "preset", preset: "claude_code", append: memoryContext }
+    : { type: "preset", preset: "claude_code" };
 }
 
 type PromptQueueItem =

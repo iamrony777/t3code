@@ -265,3 +265,34 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
     ).toThrow();
   });
 });
+
+describe("provider input memoryContext", () => {
+  it("decodes a start input carrying memoryContext and cwd", () => {
+    const decoded = Schema.decodeUnknownSync(ProviderSessionStartInput)({
+      threadId: "thread-1",
+      runtimeMode: "auto",
+      cwd: "/workspace/project",
+      memoryContext: "<memory>1. Claude memory — ~/.claude/CLAUDE.md</memory>",
+    });
+    expect(decoded.memoryContext).toBe("<memory>1. Claude memory — ~/.claude/CLAUDE.md</memory>");
+    expect(decoded.cwd).toBe("/workspace/project");
+  });
+
+  it("decodes a turn input carrying memoryContext", () => {
+    const decoded = Schema.decodeUnknownSync(ProviderSendTurnInput)({
+      threadId: "thread-1",
+      input: "fix the build",
+      memoryContext: "<memory>1. Codex memory — ~/.codex/AGENTS.md</memory>",
+    });
+    expect(decoded.memoryContext).toBe("<memory>1. Codex memory — ~/.codex/AGENTS.md</memory>");
+  });
+
+  it("omits memoryContext when absent", () => {
+    const decoded = Schema.decodeUnknownSync(ProviderSendTurnInput)({
+      threadId: "thread-1",
+      input: "hi",
+    });
+    expect(decoded.memoryContext).toBeUndefined();
+    expect(decoded.cwd).toBeUndefined();
+  });
+});

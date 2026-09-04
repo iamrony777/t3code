@@ -824,6 +824,11 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
+    const project = yield* resolveProject(thread.projectId);
+    const effectiveCwd = resolveThreadWorkspaceCwd({
+      thread,
+      projects: project ? [project] : [],
+    });
 
     return {
       threadId: input.threadId,
@@ -831,6 +836,7 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
     };
   });
 

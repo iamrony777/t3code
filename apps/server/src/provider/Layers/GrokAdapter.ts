@@ -1562,22 +1562,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     } satisfies EffectAcpSchema.ContentBlock;
                   }),
               );
-              const promptParts = grokPromptPartsWithMemory({
-                promptParts: [
-                  ...(text ? [{ type: "text" as const, text }] : []),
-                  ...imagePromptParts,
-                ],
-                memoryContext: input.memoryContext,
-                isFirstTurn: ctx.turns.length === 0,
-              });
-
-              if (promptParts.length === 0) {
+              const basePromptParts: Array<EffectAcpSchema.ContentBlock> = [
+                ...(text ? [{ type: "text" as const, text }] : []),
+                ...imagePromptParts,
+              ];
+              if (basePromptParts.length === 0) {
                 return yield* new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "sendTurn",
                   issue: "Turn requires non-empty text or attachments.",
                 });
               }
+              const promptParts = grokPromptPartsWithMemory({
+                promptParts: basePromptParts,
+                memoryContext: input.memoryContext,
+                isFirstTurn: ctx.turns.length === 0,
+              });
 
               const currentModelId = yield* applyGrokAcpModelSelection({
                 runtime: ctx.acp,

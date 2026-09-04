@@ -248,6 +248,15 @@ it("grokPromptPartsWithMemory prefixes the memory block on the first turn", () =
   assert.deepStrictEqual(parts[1], textBlock);
 });
 
+it("grokPromptPartsWithMemory still prefixes the memory block on an empty first turn", () => {
+  const parts = grokPromptPartsWithMemory({
+    promptParts: [],
+    memoryContext: "<memory>1. Claude</memory>",
+    isFirstTurn: true,
+  });
+  assert.deepStrictEqual(parts, [{ type: "text", text: "<memory>1. Claude</memory>" }]);
+});
+
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {

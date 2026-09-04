@@ -186,13 +186,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["command menu dollar $ slash /"],
   },
   {
-    id: "memory-sources",
-    title: "Memory sources",
-    to: "/settings/general",
-    targetId: "memory-sources",
-    searchTerms: ["memory file agent harness claude codex grok taste path remember"],
-  },
-  {
     id: "provider-update-checks",
     title: "Provider update checks",
     to: "/settings/general",

@@ -151,7 +151,6 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { MemorySourcesSection } from "./MemorySourcesSection";
 import { ProjectFavicon } from "../ProjectFavicon";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
@@ -2138,14 +2137,6 @@ export function GeneralSettingsPanel() {
             />
           }
         />
-
-        <SettingsRow
-          serverScoped
-          {...searchableSetting("memory-sources")}
-          description="Offer memory files from other harnesses as agent context. Global paths are machine-wide; project paths are workspace-relative."
-        >
-          <MemorySourcesSection />
-        </SettingsRow>
 
         <SettingsRow
           serverScoped

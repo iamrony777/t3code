@@ -1455,8 +1455,9 @@ export function makeCommandCodeAdapter(
             }),
           );
         }
-        const prompt = rewriteCommandCodeCompactPrompt(
-          withMemoryContext(input.input ?? "", input.memoryContext),
+        const prompt = withMemoryContext(
+          rewriteCommandCodeCompactPrompt(input.input ?? ""),
+          input.memoryContext,
         );
         return Effect.succeed({ ctx, prompt });
       });

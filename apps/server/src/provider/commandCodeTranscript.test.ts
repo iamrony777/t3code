@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { withMemoryContext } from "../memory/memoryManifest.ts";
+import { rewriteCommandCodeCompactPrompt } from "./commandCodeCompactMod.ts";
 import {
   COMMAND_CODE_TRANSCRIPT_MAX_TAIL_BYTES,
   commandCodeProjectSlugCandidate,
@@ -178,5 +179,14 @@ describe("commandcode prompt memory context", () => {
     expect(withMemoryContext("fix the build", "<memory>1. Claude</memory>")).toBe(
       "<memory>1. Claude</memory>\n\nfix the build",
     );
+  });
+
+  it("keeps the /compact expansion in the prompt after the memory prefix", () => {
+    const prompt = withMemoryContext(
+      rewriteCommandCodeCompactPrompt("/compact"),
+      "<memory>1. Claude</memory>",
+    );
+    expect(prompt.startsWith("<memory>1. Claude</memory>")).toBe(true);
+    expect(prompt).toContain("compact_conversation");
   });
 });

@@ -27,62 +27,44 @@ describe("MemorySourceIndexer", () => {
     }).pipe(Effect.provide(MemorySourceIndexer.layerTest(sources))),
   );
 
-  it.effect("injectionFor excludes missing and disabled sources and dedupes unchanged blocks", () =>
+  it.effect("injectionFor excludes missing and disabled sources and always yields the block", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       yield* fs.writeFileString(MEMORY_FILE, "prod db access");
       const indexer = yield* MemorySourceIndexer.MemorySourceIndexer;
       yield* indexer.sweepNow;
-      const input = { threadId: "thread-1", projectRoot: "/unused" } as const;
 
-      const first = yield* indexer.injectionFor({ ...input, sessionStart: true });
+      const first = yield* indexer.injectionFor({ projectRoot: "/unused" });
       expect(first).toContain("1. Claude memory");
       expect(first).toContain(MEMORY_FILE);
       expect(first).not.toContain("Lost memory"); // missing paths are excluded
       expect(first).not.toContain("Disabled memory");
 
-      // sessionStart never records the hash: a plain injection still yields it.
-      const turn = yield* indexer.injectionFor({ ...input, sessionStart: false });
+      // Every injection yields the same current block.
+      const turn = yield* indexer.injectionFor({ projectRoot: "/unused" });
       expect(turn).toBe(first);
-
-      // Unchanged block: deduped on subsequent non-session-start injections.
-      const again = yield* indexer.injectionFor({ ...input, sessionStart: false });
-      expect(again).toBeUndefined();
-
-      // A sessionStart injection always yields the block again.
-      const restart = yield* indexer.injectionFor({ ...input, sessionStart: true });
-      expect(restart).toBe(first);
+      const again = yield* indexer.injectionFor({ projectRoot: "/unused" });
+      expect(again).toBe(first);
     }).pipe(Effect.provide(MemorySourceIndexer.layerTest(sources))),
   );
 
-  it.effect("restart clears the recorded hash so the block re-yields on the next turn", () =>
+  it.effect("the block stays stable across repeated injections and sweeps", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       yield* fs.writeFileString(MEMORY_FILE, "prod db access");
       const indexer = yield* MemorySourceIndexer.MemorySourceIndexer;
       yield* indexer.sweepNow;
-      const input = { threadId: "thread-restart", projectRoot: "/unused" } as const;
 
-      // Session start yields the block.
-      const start = yield* indexer.injectionFor({ ...input, sessionStart: true });
-      expect(start).toContain("1. Claude memory");
+      const first = yield* indexer.injectionFor({ projectRoot: "/unused" });
+      expect(first).toContain("1. Claude memory");
 
-      // The first plain injection yields the same block and records the hash.
-      const turn = yield* indexer.injectionFor({ ...input, sessionStart: false });
-      expect(turn).toBe(start);
-
-      // Unchanged block: deduped.
-      const deduped = yield* indexer.injectionFor({ ...input, sessionStart: false });
-      expect(deduped).toBeUndefined();
-
-      // Restart yields the block again.
-      const restart = yield* indexer.injectionFor({ ...input, sessionStart: true });
-      expect(restart).toBe(start);
-
-      // The restart cleared the recorded hash, so the next plain injection
-      // yields the same block again.
-      const afterRestart = yield* indexer.injectionFor({ ...input, sessionStart: false });
-      expect(afterRestart).toBe(start);
+      // Repeated injections, with and without an intervening sweep, always
+      // yield the same block.
+      const turn = yield* indexer.injectionFor({ projectRoot: "/unused" });
+      expect(turn).toBe(first);
+      yield* indexer.sweepNow;
+      const afterSweep = yield* indexer.injectionFor({ projectRoot: "/unused" });
+      expect(afterSweep).toBe(first);
     }).pipe(Effect.provide(MemorySourceIndexer.layerTest(sources))),
   );
 
@@ -97,9 +79,7 @@ describe("MemorySourceIndexer", () => {
       yield* fs.writeFileString(paths.join(root, "taste.md"), "commandcode taste");
       const indexer = yield* MemorySourceIndexer.MemorySourceIndexer;
       const block = yield* indexer.injectionFor({
-        threadId: "thread-2",
         projectRoot: root,
-        sessionStart: true,
       });
       expect(block).toContain("CommandCode taste");
       expect(block).toContain(paths.join(root, "taste.md"));

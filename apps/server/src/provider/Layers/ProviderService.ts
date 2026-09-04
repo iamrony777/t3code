@@ -775,9 +775,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
         const memoryContext = Option.isSome(memoryInjection)
           ? yield* memoryInjection.value.injectionFor({
-              threadId: input.threadId,
               projectRoot: effectiveCwd ?? input.cwd ?? "",
-              sessionStart: true,
             })
           : undefined;
         const startInput = memoryContext === undefined ? input : { ...input, memoryContext };
@@ -928,9 +926,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const memoryInjection = yield* Effect.serviceOption(MemorySourceIndexer.MemorySourceIndexer);
       const memoryContext = Option.isSome(memoryInjection)
         ? yield* memoryInjection.value.injectionFor({
-            threadId: input.threadId,
             projectRoot: input.cwd ?? "",
-            sessionStart: false,
           })
         : undefined;
       const inputWithMemory = memoryContext === undefined ? input : { ...input, memoryContext };

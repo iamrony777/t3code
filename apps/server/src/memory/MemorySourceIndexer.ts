@@ -5,8 +5,8 @@
  * The sweep runs every 60s (same pattern as ThreadSettlementReactor) and
  * `stat()`s global sources only — file content is never read. Project-scoped
  * sources are resolved per thread and stat'd on demand by `injectionFor`.
- * Injection is hash-deduped per thread, so a turn only carries a new block
- * when the manifest changed since the thread's last injection.
+ * The block is attached at session start and on every turn where the caller
+ * requests it.
  *
  * @module MemorySourceIndexer
  */
@@ -23,25 +23,14 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
-import * as NodeCrypto from "node:crypto";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  assembleMemoryBlock,
-  selectMemoryEntries,
-  type ResolvedMemoryEntry,
-} from "./memoryManifest.ts";
+import { assembleMemoryBlock, type ResolvedMemoryEntry } from "./memoryManifest.ts";
 
 const SWEEP_INTERVAL = "60 seconds" as const;
 
 interface InjectionState {
   readonly globalStats: ReadonlyMap<string, number | null>;
-}
-
-interface InjectionInput {
-  readonly threadId: string;
-  readonly projectRoot: string;
-  readonly sessionStart: boolean;
 }
 
 export class MemorySourceIndexer extends Context.Service<
@@ -50,14 +39,13 @@ export class MemorySourceIndexer extends Context.Service<
     start: Effect.Effect<void, never, Scope.Scope>;
     sweepNow: Effect.Effect<ReadonlyMap<string, number | null>>;
     /**
-     * The block to inject, or undefined when it is unchanged since the
-     * thread's last injection. `sessionStart` always yields the current block,
-     * clears the thread's recorded hash, and never records, so a restarted
-     * session's first turn re-yields the block while adapters that consume the
-     * block on the first turn still see it. Never fails: stat or settings
-     * failures yield no block rather than an error.
+     * Returns the current block for the thread's project root, or undefined
+     * when no source survives. Never fails: stat or settings failures yield no
+     * block rather than an error.
      */
-    injectionFor: (input: InjectionInput) => Effect.Effect<string | undefined, never>;
+    injectionFor: (input: {
+      readonly projectRoot: string;
+    }) => Effect.Effect<string | undefined, never>;
   }
 >()("t3/memory/MemorySourceIndexer") {}
 
@@ -66,7 +54,6 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* Path.Path;
   const stateRef = yield* Ref.make<InjectionState>({ globalStats: new Map() });
-  const threadHashes = yield* Ref.make<Map<string, string>>(new Map());
 
   /** Stat mtime in epoch milliseconds, or null when the path is not a file. */
   const statPath = (path: string): Effect.Effect<number | null> =>
@@ -102,7 +89,7 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => new Map<string, number | null>()),
   );
 
-  const injectionFor = ({ threadId, projectRoot, sessionStart }: InjectionInput) =>
+  const injectionFor = ({ projectRoot }: { readonly projectRoot: string }) =>
     Effect.gen(function* () {
       const settings = yield* settingsService.getSettings.pipe(
         Effect.orElseSucceed(() => undefined),
@@ -143,23 +130,6 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.map((groups) => groups.flat()));
       const block = assembleMemoryBlock({ entries, nowMs: yield* Clock.currentTimeMillis });
       if (block === null) return undefined;
-      if (sessionStart) {
-        // Forget the thread's recorded hash so the restarted session's first
-        // plain injection yields the block again.
-        yield* Ref.update(threadHashes, (recorded) => {
-          if (!recorded.has(threadId)) return recorded;
-          const next = new Map(recorded);
-          next.delete(threadId);
-          return next;
-        });
-      } else {
-        const hash = NodeCrypto.createHash("sha256")
-          .update(JSON.stringify(selectMemoryEntries(entries)))
-          .digest("hex");
-        const recorded = yield* Ref.get(threadHashes);
-        if (recorded.get(threadId) === hash) return undefined;
-        yield* Ref.set(threadHashes, new Map(recorded).set(threadId, hash));
-      }
       return block;
     });
 

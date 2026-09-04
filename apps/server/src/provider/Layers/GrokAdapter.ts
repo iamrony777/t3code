@@ -81,6 +81,16 @@ import {
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
+/** Prefix the federated memory block onto the first prompt of a session. */
+export function grokPromptPartsWithMemory(input: {
+  readonly promptParts: ReadonlyArray<EffectAcpSchema.ContentBlock>;
+  readonly memoryContext: string | undefined;
+  readonly isFirstTurn: boolean;
+}): ReadonlyArray<EffectAcpSchema.ContentBlock> {
+  if (input.memoryContext === undefined || !input.isFirstTurn) return input.promptParts;
+  return [{ type: "text", text: input.memoryContext }, ...input.promptParts];
+}
+
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("grok");
@@ -1552,10 +1562,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     } satisfies EffectAcpSchema.ContentBlock;
                   }),
               );
-              const promptParts: Array<EffectAcpSchema.ContentBlock> = [
-                ...(text ? [{ type: "text" as const, text }] : []),
-                ...imagePromptParts,
-              ];
+              const promptParts = grokPromptPartsWithMemory({
+                promptParts: [
+                  ...(text ? [{ type: "text" as const, text }] : []),
+                  ...imagePromptParts,
+                ],
+                memoryContext: input.memoryContext,
+                isFirstTurn: ctx.turns.length === 0,
+              });
 
               if (promptParts.length === 0) {
                 return yield* new ProviderAdapterValidationError({

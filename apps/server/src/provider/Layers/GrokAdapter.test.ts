@@ -27,6 +27,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import {
+  grokPromptPartsWithMemory,
   grokPromptSettlementBelongsToContext,
   isGrokEnterPlanModeToolCall,
   makeGrokAdapter,
@@ -210,6 +211,41 @@ it("requires a settlement to match the live Grok turn", () => {
       turnId: staleTurnId,
     }),
   );
+});
+
+it("grokPromptPartsWithMemory keeps the parts unchanged without memory context", () => {
+  const textBlock = { type: "text" as const, text: "fix the build" };
+  assert.deepStrictEqual(
+    grokPromptPartsWithMemory({
+      promptParts: [textBlock],
+      memoryContext: undefined,
+      isFirstTurn: true,
+    }),
+    [textBlock],
+  );
+});
+
+it("grokPromptPartsWithMemory keeps the parts unchanged on later turns", () => {
+  const textBlock = { type: "text" as const, text: "fix the build" };
+  assert.deepStrictEqual(
+    grokPromptPartsWithMemory({
+      promptParts: [textBlock],
+      memoryContext: "<memory>1. Claude</memory>",
+      isFirstTurn: false,
+    }),
+    [textBlock],
+  );
+});
+
+it("grokPromptPartsWithMemory prefixes the memory block on the first turn", () => {
+  const textBlock = { type: "text" as const, text: "fix the build" };
+  const parts = grokPromptPartsWithMemory({
+    promptParts: [textBlock],
+    memoryContext: "<memory>1. Claude</memory>",
+    isFirstTurn: true,
+  });
+  assert.deepStrictEqual(parts[0], { type: "text", text: "<memory>1. Claude</memory>" });
+  assert.deepStrictEqual(parts[1], textBlock);
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {

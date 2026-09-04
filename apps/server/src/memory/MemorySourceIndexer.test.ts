@@ -57,6 +57,9 @@ describe("MemorySourceIndexer", () => {
 
         const block = yield* withIndexer(
           {
+            // Manual-source test: detection off keeps it hermetic so no
+            // ambient ~/.claude config dir is ever enumerated or stat'd.
+            providers: { claudeAgent: { enabled: false } },
             memorySources: [
               { label: "Anchored", path: file, projectRoot: root, enabled: true },
               { label: "Elsewhere", path: file, projectRoot: otherRoot, enabled: true },
@@ -93,7 +96,10 @@ describe("MemorySourceIndexer", () => {
         yield* fs.utimes(memoryDir, new Date(now), new Date(now - 6 * 3_600_000));
 
         const block = yield* withIndexer(
-          { memorySources: [{ label: "Folder mem", path: memoryDir, projectRoot: root }] },
+          {
+            providers: { claudeAgent: { enabled: false } },
+            memorySources: [{ label: "Folder mem", path: memoryDir, projectRoot: root }],
+          },
           (indexer) => indexer.injectionFor({ projectRoot: root }),
         );
 
@@ -114,7 +120,10 @@ describe("MemorySourceIndexer", () => {
         yield* fs.utimes(memoryDir, new Date(now), new Date(now - 65_000));
 
         const block = yield* withIndexer(
-          { memorySources: [{ label: "Folder mem", path: memoryDir, projectRoot: root }] },
+          {
+            providers: { claudeAgent: { enabled: false } },
+            memorySources: [{ label: "Folder mem", path: memoryDir, projectRoot: root }],
+          },
           (indexer) => indexer.injectionFor({ projectRoot: root }),
         );
 
@@ -285,22 +294,19 @@ describe("MemorySourceIndexer", () => {
     withTempDirs(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-config-" });
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
-        const memoryFolder = yield* createClaudeMemoryFolder(fs, configDir, root);
-        const manualFile = yield* fs.makeTempFileScoped({ prefix: "t3-mem-manual-" });
+        // A legacy v1 manual source (`projectRoot: ""`) would match an
+        // empty-root call, so the empty-root short-circuit must return before
+        // any settings read or stat of this file.
+        const file = yield* fs.makeTempFileScoped({ prefix: "t3-mem-manual-" });
 
         const block = yield* withIndexer(
           {
-            providers: { claudeAgent: { enabled: true, homePath: configDir } },
-            memorySources: [{ label: "Manual", path: manualFile, projectRoot: root }],
-            memoryAutoDetect: { [root]: { enabled: true } },
+            memorySources: [{ label: "Legacy", path: file, projectRoot: "", enabled: true }],
           },
           (indexer) => indexer.injectionFor({ projectRoot: "" }),
         );
 
         expect(block).toBeUndefined();
-        expect(memoryFolder.length).toBeGreaterThan(0);
       }),
     ),
   );

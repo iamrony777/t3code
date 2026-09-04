@@ -685,13 +685,14 @@ export const BackgroundActivitySettings = Schema.Struct({
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
 /**
- * One memory source: a file where another harness persists its memory. Every
- * source is anchored to the project rooted at its `projectRoot` (an absolute
- * workspace root) — memory is per-project, never machine-wide. `path` is
- * resolved against that root. A decoded `projectRoot` of `""` marks a legacy
- * v1 entry that predates the per-project anchor and carried a machine-wide
- * `scope` instead; such entries decode without error but are inert. T3 only
- * `stat()`s these paths — it never reads content.
+ * One memory source: a file or folder where another harness persists its
+ * memory. Each entry is scoped to the project rooted at its `projectRoot`
+ * (an absolute workspace root) — memory is per-project, never machine-wide.
+ * `path` is an absolute path that T3 only `stat()`s — it never reads content,
+ * and the path is reported as-is rather than resolved against the root. A
+ * decoded `projectRoot` of `""` marks an inert legacy v1 entry that predates
+ * the per-project anchor (it carried a machine-wide `scope` instead); such
+ * entries decode without error but never match a real project root.
  */
 export const MemorySourceEntry = Schema.Struct({
   label: TrimmedNonEmptyString,

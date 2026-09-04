@@ -166,15 +166,15 @@ ships T3 Code already matching it.
 
 ### Memory
 
-Federated memory advertises the paths of the other harnesses' persistent memory files to agents. The indexer is [MemorySourceIndexer.ts][27], block assembly is [memoryManifest.ts][28], and the design doc is [memory-federation.md][29].
+Federated memory advertises where the other harnesses keep per-project memory to agents: files or folders of memories, indexed by path and freshness only. Claude Code's per-project auto-memory folders are detected automatically; other sources are configured manually. The indexer is [MemorySourceIndexer.ts][27], block assembly is [memoryManifest.ts][28], and the design doc is [memory-federation.md][29].
 
 #### Memory source
 
-A configured path to another harness's persistent memory file, indexed by T3 Code and advertised to agents at session start; typed as `MemorySourceEntry` in [settings.ts][30]. See [federated memory](#federated-memory).
+A configured file or folder where another harness keeps memory for one project, anchored to that project by its absolute root and typed as `MemorySourceEntry` in [settings.ts][30]. Memory is per project — there is no machine-wide or global source, and a folder of memories counts as one source. See [federated memory](#federated-memory).
 
 #### Federated memory
 
-The mechanism by which T3 Code tells each agent where the other harnesses' memory files live, sharing only paths and update times — never file content. See [memory-federation.md][29] and [MemorySourceIndexer.ts][27].
+The mechanism by which T3 Code tells each agent where the other harnesses' memory for the current project lives — auto-detected Claude auto-memory folders plus manually configured sources — sharing only paths and update times, never file content. See [memory-federation.md][29] and [MemorySourceIndexer.ts][27].
 
 ## Practical Shortcuts
 

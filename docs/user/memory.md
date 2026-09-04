@@ -42,7 +42,7 @@ T3 Code detects these folders for each project on its own:
 For any harness whose memory T3 Code does not detect on its own, add a source
 for the project: a file or folder that harness keeps memory in, for example a
 memory file inside the project or in that harness's own area. Each source is
-tied to one project. You can add, disable, edit, or remove sources at any time.
+tied to one project. You can add, disable, or remove sources at any time.
 
 ## Where the settings live
 

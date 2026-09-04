@@ -2,8 +2,9 @@
 
 > For maintainers.
 
-Each provider harness (Codex, Claude, Grok, OpenCode, Command Code) persists memory
-in its own files. T3 Code does not replace those stores — it indexes their paths and
+Each provider harness that consumes the injected block (Codex, Claude, Grok,
+OpenCode, Command Code — Cursor has no injection slot) persists memory in its own
+files. T3 Code does not replace those stores — it indexes their paths and
 tells every agent where the others are. The agent reads what it needs under its own
 permission model.
 
@@ -99,8 +100,9 @@ Per-project memory config is edited where the project lives, not in General
 settings. The web **Project settings → Memory** section
 (`ProjectMemorySourcesSection`, on the per-checkout `ProjectSettingsPanel`)
 shows the auto-detected Claude folders for the selected checkout's root — each
-with an include/exclude switch plus a master "share Claude memory automatically"
-toggle — and the manual sources anchored at that root, edited with the shared
+with an include/exclude switch plus a master "Share Claude memory folders
+automatically" toggle — and the manual sources anchored at that root, edited with
+the shared
 list-edit helpers in `apps/web/src/components/settings/memorySources.logic.ts`.
 The General-settings "Memory sources" section and its mobile counterpart are
 gone; **mobile management UI is deferred** (mobile threads still receive the

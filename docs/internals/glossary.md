@@ -13,8 +13,9 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Checkpointing](#checkpointing)
 - [Appearance](#appearance)
 - [Memory](#memory)
-- [Memory source](#memory-source): A configured path to another harness's persistent memory
-  file, indexed by T3 Code and advertised to agents at session start. See
+- [Memory source](#memory-source): A configured file or folder where another
+  harness keeps memory for one project, anchored to that project by its absolute
+  root; a folder of memories counts as one source. See
   [federated memory](#federated-memory).
 
 ## Concepts

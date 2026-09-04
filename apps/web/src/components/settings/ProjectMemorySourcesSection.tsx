@@ -6,14 +6,16 @@
  *
  * - Auto-detection: a master toggle plus one Include/Exclude switch per folder
  *   the environment's server currently detects under Claude's config dirs for
- *   this project root. The detected list is a read-only preview over the
- *   `server.getDetectedMemoryFolders` RPC (cached 60s), so it is best-effort:
- *   an unavailable or slow answer renders as "no folders", never an error.
+ *   this project root. The detected list is a read-only preview read through
+ *   the `serverEnvironment.detectedMemoryFolders` query family (WS tag
+ *   `serverGetDetectedMemoryFolders`), so it is best-effort: an unavailable or
+ *   slow answer renders as "no folders", never an error. The preview is a
+ *   point-in-time disk stat, refreshed when this section moves to a new root.
  * - Manual sources: the `memorySources` entries anchored at this workspace
  *   root, edited through the whole-list replacement helpers.
  */
 import { PlusIcon, Trash2Icon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type {
   EnvironmentId,
@@ -53,6 +55,19 @@ export function ProjectMemorySourcesSection({
       input: { projectRoot: workspaceRoot },
     }),
   );
+
+  // The preview is a point-in-time disk stat, so when the section starts
+  // tracking a different workspace root, re-ask for a fresh one: folders may
+  // have appeared under that root since it was last previewed. The mount query
+  // already fetched for the initial root, so only later root changes refresh.
+  const skipFirstRefresh = useRef(true);
+  useEffect(() => {
+    if (skipFirstRefresh.current) {
+      skipFirstRefresh.current = false;
+      return;
+    }
+    detectedPreview.refresh();
+  }, [detectedPreview.refresh, workspaceRoot]);
 
   // Writes replace whole server lists/maps, so two overlapping edits computed
   // from the same snapshot would drop each other's changes. One at a time.

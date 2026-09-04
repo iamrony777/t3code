@@ -34,12 +34,17 @@ export type MemorySourceListEdit =
   | { readonly kind: "update"; readonly entry: MemorySourceEntry }
   | { readonly kind: "remove"; readonly key: MemorySourceKey };
 
+/** True when an entry carries the same projectRoot and path as the key. */
+function matchesKey(entry: MemorySourceEntry, key: MemorySourceKey): boolean {
+  return entry.projectRoot === key.projectRoot && entry.path === key.path;
+}
+
 /** True when an entry with the same projectRoot and path exists in the list. */
 export function hasMemorySource(
   sources: ReadonlyArray<MemorySourceEntry>,
   key: MemorySourceKey,
 ): boolean {
-  return sources.some((entry) => entry.projectRoot === key.projectRoot && entry.path === key.path);
+  return sources.some((entry) => matchesKey(entry, key));
 }
 
 export function applyMemorySourceListEdit(
@@ -50,15 +55,9 @@ export function applyMemorySourceListEdit(
     case "add":
       return [...sources, edit.entry];
     case "update":
-      return sources.map((entry) =>
-        entry.projectRoot === edit.entry.projectRoot && entry.path === edit.entry.path
-          ? edit.entry
-          : entry,
-      );
+      return sources.map((entry) => (matchesKey(entry, edit.entry) ? edit.entry : entry));
     case "remove":
-      return sources.filter(
-        (entry) => !(entry.projectRoot === edit.key.projectRoot && entry.path === edit.key.path),
-      );
+      return sources.filter((entry) => !matchesKey(entry, edit.key));
   }
 }
 
@@ -107,9 +106,7 @@ export function toggleMemorySourceEnabled(
   sources: ReadonlyArray<MemorySourceEntry>,
   key: MemorySourceKey,
 ): Array<MemorySourceEntry> {
-  const existing = sources.find(
-    (entry) => entry.projectRoot === key.projectRoot && entry.path === key.path,
-  );
+  const existing = sources.find((entry) => matchesKey(entry, key));
   if (!existing) return [...sources];
   return applyMemorySourceListEdit(sources, {
     kind: "update",
@@ -128,9 +125,7 @@ export function upsertManualMemorySource(
   input: { readonly label: string; readonly path: string; readonly projectRoot: string },
 ): Array<MemorySourceEntry> {
   const key: MemorySourceKey = { projectRoot: input.projectRoot, path: input.path };
-  const existing = sources.find(
-    (entry) => entry.projectRoot === key.projectRoot && entry.path === key.path,
-  );
+  const existing = sources.find((entry) => matchesKey(entry, key));
   if (existing !== undefined) {
     return applyMemorySourceListEdit(sources, {
       kind: "update",

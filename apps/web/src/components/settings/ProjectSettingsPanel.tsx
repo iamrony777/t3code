@@ -1177,7 +1177,12 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
           ) : null}
         </SettingsSection>
 
+        {/* Keyed by checkout root: this panel outlives checkout switches, and
+            the memory section keeps its own label/path form state plus a
+            per-root detected preview, so it must remount when the checkout
+            changes. */}
         <ProjectMemorySourcesSection
+          key={selectedCheckout.workspaceRoot}
           environmentId={selectedCheckout.environmentId}
           workspaceRoot={selectedCheckout.workspaceRoot}
         />

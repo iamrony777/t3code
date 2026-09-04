@@ -12,6 +12,10 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
 - [Appearance](#appearance)
+- [Memory](#memory)
+- [Memory source](#memory-source): A configured path to another harness's persistent memory
+  file, indexed by T3 Code and advertised to agents at session start. See
+  [federated memory](#federated-memory).
 
 ## Concepts
 
@@ -160,6 +164,18 @@ theme a user picks in Settings afterwards sticks until the next set; mobile keep
 appearance settings. Naming a published [environment theme](#environment-theme) is how a desktop
 ships T3 Code already matching it.
 
+### Memory
+
+Federated memory advertises the paths of the other harnesses' persistent memory files to agents. The indexer is [MemorySourceIndexer.ts][27], block assembly is [memoryManifest.ts][28], and the design doc is [memory-federation.md][29].
+
+#### Memory source
+
+A configured path to another harness's persistent memory file, indexed by T3 Code and advertised to agents at session start; typed as `MemorySourceEntry` in [settings.ts][30]. See [federated memory](#federated-memory).
+
+#### Federated memory
+
+The mechanism by which T3 Code tells each agent where the other harnesses' memory files live, sharing only paths and update times — never file content. See [memory-federation.md][29] and [MemorySourceIndexer.ts][27].
+
 ## Practical Shortcuts
 
 - If you see `requested`, think "intent recorded".
@@ -201,3 +217,7 @@ ships T3 Code already matching it.
 [24]: ./overview.md
 [25]: ../../apps/server/src/environmentTheme.ts
 [26]: ../user/environment-theme.md
+[27]: ../../apps/server/src/memory/MemorySourceIndexer.ts
+[28]: ../../apps/server/src/memory/memoryManifest.ts
+[29]: ./memory-federation.md
+[30]: ../../packages/contracts/src/settings.ts

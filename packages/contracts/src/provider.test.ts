@@ -282,9 +282,11 @@ describe("provider input memoryContext", () => {
     const decoded = Schema.decodeUnknownSync(ProviderSendTurnInput)({
       threadId: "thread-1",
       input: "fix the build",
+      cwd: "/workspace/project",
       memoryContext: "<memory>1. Codex memory — ~/.codex/AGENTS.md</memory>",
     });
     expect(decoded.memoryContext).toBe("<memory>1. Codex memory — ~/.codex/AGENTS.md</memory>");
+    expect(decoded.cwd).toBe("/workspace/project");
   });
 
   it("omits memoryContext when absent", () => {

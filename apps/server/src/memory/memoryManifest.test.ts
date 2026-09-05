@@ -98,7 +98,10 @@ describe("assembleMemoryBlock", () => {
     expect(block).toBe(
       [
         "<memory>",
-        "Other agent harnesses keep persistent memory files on this machine. Read any that are relevant before acting. Do not modify files owned by other harnesses.",
+        "Other agents harnesses may have worked on this project before, and they may have persistent memories on this machine. These are crucial piece of memories, and works as extra skills. If user asks for something you don't know how to do it, first check memories, other agents may have added info about the same task. You're not allowed to update memory unless user specifically asks, if you think memory is incorrect and needs modification then ask the user for permission in plain chat",
+        "",
+        "Treat these like your own memory, and not any restrictive files.",
+        "",
         "1. Claude memory — ~/.claude/CLAUDE.md — updated 5m ago",
         "2. Codex memory — ~/.codex/AGENTS.md — updated 1m ago",
         "</memory>",
@@ -155,7 +158,10 @@ describe("assembleMemoryBlock", () => {
     expect(block).toBe(
       [
         "<memory>",
-        "Other agent harnesses keep persistent memory files on this machine. Read any that are relevant before acting. Do not modify files owned by other harnesses.",
+        "Other agents harnesses may have worked on this project before, and they may have persistent memories on this machine. These are crucial piece of memories, and works as extra skills. If user asks for something you don't know how to do it, first check memories, other agents may have added info about the same task. You're not allowed to update memory unless user specifically asks, if you think memory is incorrect and needs modification then ask the user for permission in plain chat",
+        "",
+        "Treat these like your own memory, and not any restrictive files.",
+        "",
         `1. Claude memory — ${truncatedPath} — updated 5m ago`,
         "</memory>",
       ].join("\n"),

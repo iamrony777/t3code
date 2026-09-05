@@ -23,9 +23,17 @@ export interface ResolvedMemoryEntry {
   readonly updatedAtMs: number | null;
 }
 
+/** First paragraph: what the memories are and how to use them. */
 const MEMORY_BLOCK_INSTRUCTION =
-  "Other agent harnesses keep persistent memory files on this machine. " +
-  "Read any that are relevant before acting. Do not modify files owned by other harnesses.";
+  "Other agents harnesses may have worked on this project before, and they may have " +
+  "persistent memories on this machine. These are crucial piece of memories, and works as " +
+  "extra skills. If user asks for something you don't know how to do it, first check memories, " +
+  "other agents may have added info about the same task. You're not allowed to update memory " +
+  "unless user specifically asks, if you think memory is incorrect and needs modification then " +
+  "ask the user for permission in plain chat";
+
+/** Second paragraph: how the agent should relate to the listed files. */
+const MEMORY_BLOCK_DIRECTIVE = "Treat these like your own memory, and not any restrictive files.";
 
 export function formatUpdatedAgo(updatedAtMs: number | null, nowMs: number): string | null {
   if (updatedAtMs === null) return null;
@@ -68,7 +76,7 @@ export function assembleMemoryBlock(input: {
     return `${index + 1}. ${label} — ${path}${ago !== null ? ` — updated ${ago}` : ""}`;
   });
   if (listed.length === 0) return null;
-  return `<memory>\n${MEMORY_BLOCK_INSTRUCTION}\n${listed.join("\n")}\n</memory>`;
+  return `<memory>\n${MEMORY_BLOCK_INSTRUCTION}\n\n${MEMORY_BLOCK_DIRECTIVE}\n\n${listed.join("\n")}\n</memory>`;
 }
 
 /** Prepend a memory block to turn text with a blank-line separator. */

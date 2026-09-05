@@ -1,5 +1,6 @@
 import {
   type CommandCodeSettings,
+  type CustomModelSetting,
   type ModelCapabilities,
   type ProviderGlobalOption,
   ProviderInstanceId,
@@ -112,7 +113,7 @@ function capabilitiesFromCatalogModel(model: CommandCodeCatalogModel): ModelCapa
 
 export function commandCodeCatalogModelsToServerModels(
   catalog: ReadonlyArray<CommandCodeCatalogModel>,
-  customModels: ReadonlyArray<string>,
+  customModels: ReadonlyArray<CustomModelSetting>,
 ): ReadonlyArray<ServerProviderModel> {
   return providerModelsFromSettings(
     catalog.map((model) => ({
@@ -417,13 +418,11 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       modelExit.success.value.code === 0
         ? parseCommandCodeModels(modelExit.success.value.stdout)
         : [];
-    const discovered = cliModels.map(
-      (model): ServerProviderModel => ({
-        ...model,
-        isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
-      }),
-    );
+    const discovered = cliModels.map((model): ServerProviderModel => ({
+      ...model,
+      isCustom: false,
+      capabilities: EMPTY_CAPABILITIES,
+    }));
     const modelDiscoveryFailed = cliModels.length === 0;
     const skills = yield* discoverCommandCodeSkills(cwd);
 

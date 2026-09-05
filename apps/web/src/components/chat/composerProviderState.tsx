@@ -9,16 +9,19 @@ import {
   type ServerProviderGlobalOptionSetInput,
 } from "@t3tools/contracts";
 import {
-  buildProviderOptionSelectionsFromDescriptors,
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
+import type { VariantProps } from "class-variance-authority";
 import type { ReactNode } from "react";
 
+import type { buttonVariants } from "../ui/button";
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
+import type { ComposerControlSize } from "./ComposerControl";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
 const EMPTY_PROVIDER_GLOBAL_OPTIONS: ReadonlyArray<ProviderGlobalOption> = [];
@@ -58,6 +61,11 @@ type TraitsRenderInput = {
   onSetGlobalOption?: (input: ServerProviderGlobalOptionSetInput) => Promise<void>;
   onGlobalOptionError?: (message: string) => void;
   planModeEnabled: boolean;
+  size?: ComposerControlSize;
+  hidden?: boolean;
+  triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
+  triggerClassName?: string;
+  isComposerOwned?: boolean;
 };
 
 export function buildProviderGlobalOptionMutationTarget(
@@ -110,7 +118,10 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   return {
     provider,
     promptEffort,
-    modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
+    modelOptionsForDispatch: buildExplicitProviderOptionSelectionsFromDescriptors(
+      descriptors,
+      modelOptions,
+    ),
     ...(ultrathinkActive
       ? {
           composerFrameClassName: "ultrathink-frame",
@@ -140,6 +151,11 @@ function renderTraitsControl(
     onSetGlobalOption,
     onGlobalOptionError,
     planModeEnabled,
+    size,
+    hidden,
+    triggerVariant,
+    triggerClassName,
+    isComposerOwned,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (
@@ -172,6 +188,11 @@ function renderTraitsControl(
       {...(onSetGlobalOption ? { onSetGlobalOption } : {})}
       {...(onGlobalOptionError ? { onGlobalOptionError } : {})}
       planModeEnabled={planModeEnabled}
+      {...(size !== undefined ? { size } : {})}
+      {...(hidden !== undefined ? { hidden } : {})}
+      {...(triggerVariant !== undefined ? { triggerVariant } : {})}
+      {...(triggerClassName !== undefined ? { triggerClassName } : {})}
+      {...(isComposerOwned ? { isComposerOwned } : {})}
     />
   );
 }

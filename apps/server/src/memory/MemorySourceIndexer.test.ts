@@ -6,7 +6,11 @@
  */
 import { describe, expect, it } from "@effect/vitest";
 import { NodeServices } from "@effect/platform-node";
-import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  type DetectedMemoryFolder,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -22,13 +26,13 @@ type IndexerOverrides = Parameters<typeof MemorySourceIndexer.layerTest>[0];
 const withIndexer = <A, E, R>(
   overrides: IndexerOverrides,
   body: (indexer: MemorySourceIndexer.MemorySourceIndexer["Service"]) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> =>
+) =>
   MemorySourceIndexer.MemorySourceIndexer.pipe(
     Effect.flatMap((indexer) => body(indexer)),
     Effect.provide(MemorySourceIndexer.layerTest(overrides)),
   );
 
-const withTempDirs = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+const withTempDirs = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 /** Create `<configDir>/projects/<encoded root>/memory` and return its path. */
@@ -36,7 +40,7 @@ const createClaudeMemoryFolder = (
   fs: FileSystem.FileSystem,
   configDir: string,
   projectRoot: string,
-): Effect.Effect<string> => {
+) => {
   const folder = claudeMemoryFolderPath(configDir, projectRoot);
   return fs.makeDirectory(folder, { recursive: true }).pipe(Effect.as(folder));
 };
@@ -49,9 +53,11 @@ describe("MemorySourceIndexer", () => {
         const paths = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
         const otherRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-other-" });
+        // @effect-diagnostics-next-line globalDateInEffect:off
         const now = Date.now();
 
         const file = yield* fs.makeTempFileScoped({ prefix: "t3-mem-file-" });
+        // @effect-diagnostics-next-line globalDateInEffect:off
         yield* fs.utimes(file, new Date(now), new Date(now - 65_000));
         const missing = paths.join(root, "missing.md");
 
@@ -91,8 +97,11 @@ describe("MemorySourceIndexer", () => {
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
         const memoryDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-dir-" });
         yield* fs.writeFileString(paths.join(memoryDir, "MEMORY.md"), "index line");
+        // @effect-diagnostics-next-line globalDateInEffect:off
         const now = Date.now();
+        // @effect-diagnostics-next-line globalDateInEffect:off
         yield* fs.utimes(paths.join(memoryDir, "MEMORY.md"), new Date(now), new Date(now - 65_000));
+        // @effect-diagnostics-next-line globalDateInEffect:off
         yield* fs.utimes(memoryDir, new Date(now), new Date(now - 6 * 3_600_000));
 
         const block = yield* withIndexer(
@@ -116,7 +125,9 @@ describe("MemorySourceIndexer", () => {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-root-" });
         const memoryDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mem-dir-" });
+        // @effect-diagnostics-next-line globalDateInEffect:off
         const now = Date.now();
+        // @effect-diagnostics-next-line globalDateInEffect:off
         yield* fs.utimes(memoryDir, new Date(now), new Date(now - 65_000));
 
         const block = yield* withIndexer(
@@ -390,9 +401,14 @@ describe("MemorySourceIndexer", () => {
 
   it.effect("preview never rejects when the indexer is not provided", () =>
     Effect.gen(function* () {
-      const folders = yield* MemorySourceIndexer.detectedFoldersPreview({
+      // The declared MemorySourceIndexer requirement is advisory (the body
+      // reads it via serviceOption), so drop it here to exercise the
+      // absent-service path the annotation otherwise makes unreachable.
+      // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off
+      const preview = MemorySourceIndexer.detectedFoldersPreview({
         projectRoot: "/no/matter/which/root",
-      });
+      }) as Effect.Effect<ReadonlyArray<DetectedMemoryFolder>>;
+      const folders = yield* preview;
       expect(folders).toEqual([]);
     }),
   );

@@ -212,7 +212,9 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
       if (settings === undefined) return [];
-      const configDirs = yield* enumerateClaudeConfigDirs(settings);
+      const configDirs = yield* enumerateClaudeConfigDirs(settings).pipe(
+        Effect.provideService(Path.Path, paths),
+      );
       const folders: Array<DetectedMemoryFolder> = [];
       for (const configDir of configDirs) {
         const entry = yield* detectedEntryFor(configDir, projectRoot);
@@ -257,7 +259,9 @@ const make = Effect.gen(function* () {
 
       let detectedEntries: ReadonlyArray<ResolvedMemoryEntry> = [];
       if (autoDetectEnabled) {
-        const configDirs = yield* enumerateClaudeConfigDirs(settings);
+        const configDirs = yield* enumerateClaudeConfigDirs(settings).pipe(
+          Effect.provideService(Path.Path, paths),
+        );
         detectedEntries = yield* Effect.forEach(configDirs, (configDir) =>
           Effect.gen(function* () {
             const entry = yield* detectedEntryFor(configDir, projectRoot);

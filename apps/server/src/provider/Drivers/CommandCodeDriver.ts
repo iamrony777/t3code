@@ -49,6 +49,7 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
+  makeCachedProviderMaintenanceResolution,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import {
@@ -62,7 +63,6 @@ const DRIVER_KIND = ProviderDriverKind.make("commandcode");
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "command-code",
-  homebrewFormula: null,
   nativeUpdate: null,
 });
 
@@ -293,10 +293,16 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
       );
       const readGlobalOptions = globalOptionsController.readOptions;
       const catalogSeedRef = yield* Ref.make<CommandCodeCatalogSeed | undefined>(undefined);
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+      const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+        resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
+          binaryPath: effectiveConfig.binaryPath,
+          env: processEnv,
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+      );
 
       const adapter = yield* makeCommandCodeAdapter(effectiveConfig, {
         instanceId,
@@ -346,7 +352,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
       const snapshot = yield* makeManagedServerProvider<
         ProviderSnapshotSettings<CommandCodeSettings>
       >({
-        maintenanceCapabilities,
+        resolveMaintenance,
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -363,6 +369,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         checkProvider,
         enrichSnapshot: ({ settings, snapshot, getSnapshot, publishSnapshot }) =>
           Effect.gen(function* () {
+            const maintenanceCapabilities = yield* resolveMaintenance();
             const seed = yield* Ref.get(catalogSeedRef);
             if (seed !== undefined) {
               yield* enrichCommandCodeProviderSnapshot({

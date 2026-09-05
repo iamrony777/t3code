@@ -78,7 +78,37 @@ describe("assembleMemoryBlock", () => {
     expect(assembleMemoryBlock({ entries: [], nowMs: NOW })).toBeNull();
   });
 
-  it("formats the block with instruction, order, and freshness", () => {
+  it("formats the block with ownership, guidance, and freshness, hinting the Claude layout when a claudeAgent entry is present", () => {
+    const block = assembleMemoryBlock({
+      entries: [entry({ updatedAtMs: NOW - 5 * 60_000 })],
+      nowMs: NOW,
+    });
+    expect(block).toBe(
+      [
+        "<memory>",
+        "T3 Code is a harness-for-harnesses. The folders below are persistent project memory recorded by the other harnesses that share this project checkout with you. Treat what is in them as your own project memory — use it to stay consistent with prior work, before you re-derive decisions someone else already made.",
+        "Consult these folders before acting when the task references anything in them, needs prior context, or is ambiguous and earlier work may inform it. Skip them for self-contained queries. \u201cUpdated Xd ago\u201d is the last change time; when a fact may be stale (infra, commands, timings), verify it or flag that it may be outdated. Do not edit these files unless the user explicitly asks \u2014 if one looks wrong, say so and ask in chat.",
+        "Reading hints (per harness):",
+        "- Claude Code memory: a per-project folder under the harness config dir. The folder name encodes the project path with every non-alphanumeric replaced by \u201c-\u201d. Each memory is one topic.md; read the MEMORY.md index first, then open only the relevant topics.",
+        "1. Claude memory — ~/.claude/CLAUDE.md — updated 5m ago",
+        "</memory>",
+      ].join("\n"),
+    );
+  });
+
+  it("emits the Claude navigation hint once even with multiple claudeAgent entries", () => {
+    const block = assembleMemoryBlock({
+      entries: [
+        entry({ label: "Claude Work", path: "/p1", updatedAtMs: NOW - 60_000 }),
+        entry({ label: "Claude LiteLLM", path: "/p2", updatedAtMs: NOW - 2 * 60_000 }),
+      ],
+      nowMs: NOW,
+    });
+    const hintCount = (block ?? "").match(/- Claude Code memory:/g)?.length ?? 0;
+    expect(hintCount).toBe(1);
+  });
+
+  it("omits the Claude navigation hint when no claudeAgent entry is present", () => {
     const block = assembleMemoryBlock({
       entries: [
         entry({
@@ -87,26 +117,11 @@ describe("assembleMemoryBlock", () => {
           harness: ProviderDriverKind.make("codex"),
           updatedAtMs: NOW - 60_000,
         }),
-        entry({
-          label: "Claude memory",
-          harness: ProviderDriverKind.make("claudeAgent"),
-          updatedAtMs: NOW - 5 * 60_000,
-        }),
       ],
       nowMs: NOW,
     });
-    expect(block).toBe(
-      [
-        "<memory>",
-        "Other agents harnesses may have worked on this project before, and they may have persistent memories on this machine. These are crucial piece of memories, and works as extra skills. If user asks for something you don't know how to do it, first check memories, other agents may have added info about the same task. You're not allowed to update memory unless user specifically asks, if you think memory is incorrect and needs modification then ask the user for permission in plain chat",
-        "",
-        "Treat these like your own memory, and not any restrictive files.",
-        "",
-        "1. Claude memory — ~/.claude/CLAUDE.md — updated 5m ago",
-        "2. Codex memory — ~/.codex/AGENTS.md — updated 1m ago",
-        "</memory>",
-      ].join("\n"),
-    );
+    expect(block).not.toContain("Reading hints (per harness):");
+    expect(block).not.toContain("Claude Code memory:");
   });
 
   it("sorts by harness then recency", () => {
@@ -158,10 +173,10 @@ describe("assembleMemoryBlock", () => {
     expect(block).toBe(
       [
         "<memory>",
-        "Other agents harnesses may have worked on this project before, and they may have persistent memories on this machine. These are crucial piece of memories, and works as extra skills. If user asks for something you don't know how to do it, first check memories, other agents may have added info about the same task. You're not allowed to update memory unless user specifically asks, if you think memory is incorrect and needs modification then ask the user for permission in plain chat",
-        "",
-        "Treat these like your own memory, and not any restrictive files.",
-        "",
+        "T3 Code is a harness-for-harnesses. The folders below are persistent project memory recorded by the other harnesses that share this project checkout with you. Treat what is in them as your own project memory — use it to stay consistent with prior work, before you re-derive decisions someone else already made.",
+        "Consult these folders before acting when the task references anything in them, needs prior context, or is ambiguous and earlier work may inform it. Skip them for self-contained queries. \u201cUpdated Xd ago\u201d is the last change time; when a fact may be stale (infra, commands, timings), verify it or flag that it may be outdated. Do not edit these files unless the user explicitly asks \u2014 if one looks wrong, say so and ask in chat.",
+        "Reading hints (per harness):",
+        "- Claude Code memory: a per-project folder under the harness config dir. The folder name encodes the project path with every non-alphanumeric replaced by \u201c-\u201d. Each memory is one topic.md; read the MEMORY.md index first, then open only the relevant topics.",
         `1. Claude memory — ${truncatedPath} — updated 5m ago`,
         "</memory>",
       ].join("\n"),

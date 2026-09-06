@@ -181,7 +181,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     enabled: true,
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    url: "https://u.expo.dev/cb45eba9-2cee-444c-94ce-a06ab557c6b9",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -383,10 +383,10 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: "cb45eba9-2cee-444c-94ce-a06ab557c6b9",
     },
   },
-  owner: "pingdotgg",
+  owner: "iamrony777",
 };
 
 export default config;

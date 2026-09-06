@@ -188,6 +188,27 @@ describe("parseClaudeUsageTuiOutput", () => {
     ]);
   });
 
+  it("parses current duplicate percentages and a comma-separated month-day reset", () => {
+    expect(
+      parseClaudeUsageTuiOutput(
+        [
+          "Current session",
+          "0% 0% used",
+          "Resets 11:09pm (Asia/Kolkata)",
+          "Current week (all models)",
+          "9% 9% used",
+          "Resets Sep 8, 4:29am (Asia/Kolkata)",
+          "Current week (Fable)",
+          "12% 12% used",
+        ].join("\n"),
+        "2026-09-06T12:46:00.000Z",
+      )?.windows.map(({ id, usedPercent, resetsAt }) => ({ id, usedPercent, resetsAt })),
+    ).toEqual([
+      { id: "five_hour", usedPercent: 0, resetsAt: "2026-09-06T17:39:00.000Z" },
+      { id: "seven_day", usedPercent: 9, resetsAt: "2026-09-07T22:59:00.000Z" },
+    ]);
+  });
+
   it("omits only an unparseable window reset", () => {
     expect(
       parseClaudeUsageTuiOutput(
@@ -532,10 +553,20 @@ it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
         }
         assert.equal(spawned.input.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
         assert.equal(spawned.input.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+        expect(
+          // @effect-diagnostics-next-line preferSchemaOverJson:off -- inspect trusted test fixture JSON
+          JSON.parse(yield* fs.readFileString(path.join(isolatedConfigDir, ".claude.json"))),
+        ).toEqual({
+          hasCompletedOnboarding: true,
+          theme: "dark",
+          projects: {
+            [spawned.input.cwd]: { hasTrustDialogAccepted: true },
+          },
+        });
         // @effect-diagnostics-next-line preferSchemaOverJson:off -- inspect trusted test fixture JSON
         expect(JSON.parse(yield* fs.readFileString(temporaryMcpPath))).toEqual({ mcpServers: {} });
 
-        spawned.process.emitData("Claude Code\n> ");
+        spawned.process.emitData("Claude Code\n$ ");
         yield* Deferred.await(fake.wrotePing);
         expect(spawned.process.writes).toEqual(["ping (reply with pong)\r"]);
 

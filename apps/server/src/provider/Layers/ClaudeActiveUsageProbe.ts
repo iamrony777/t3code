@@ -272,7 +272,7 @@ function parseAbsoluteReset(resetText: string, nowMs: number): string | undefine
   const nowParts = localParts(nowMs, timeZone);
   if (!nowParts) return undefined;
   const monthDate =
-    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:,\s*|\s+)(?:(\d{4})\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(
       resetText,
     );
   if (monthDate) {
@@ -529,6 +529,22 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
         // @effect-diagnostics-next-line preferSchemaOverJson:off -- trusted internal MCP payload
         yield* fileSystem.writeFileString(mcpPath, JSON.stringify({ mcpServers: {} }));
         yield* fileSystem.chmod(mcpPath, 0o600);
+        const isolatedStatePath = path.join(isolatedConfigDirectory, ".claude.json");
+        // A fresh config directory otherwise opens theme and workspace-trust onboarding
+        // before the interactive prompt. Keep this state minimal so no user settings,
+        // projects, plugins, or MCP configuration enter the probe.
+        yield* fileSystem.writeFileString(
+          isolatedStatePath,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off -- trusted internal bootstrap payload
+          JSON.stringify({
+            hasCompletedOnboarding: true,
+            theme: "dark",
+            projects: {
+              [tempDirectory]: { hasTrustDialogAccepted: true },
+            },
+          }),
+        );
+        yield* fileSystem.chmod(isolatedStatePath, 0o600);
 
         const probeEnvironment = makeProbeEnvironment(input.environment, isolatedConfigDirectory);
         const launch = yield* resolveClaudeActiveUsageProbeLaunch({
@@ -595,7 +611,7 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
           processHandle.onData((data) => {
             dataBuffer = `${dataBuffer}${data}`.slice(-128 * 1024);
             const text = flatTerminalText(dataBuffer);
-            const hasPrompt = (after = 0) => /(?:^|\n)[>❯]\s*$/m.test(text.slice(after));
+            const hasPrompt = (after = 0) => /(?:^|\n)[>$❯]\s*$/m.test(text.slice(after));
             if (phase === "ready" && hasPrompt()) {
               Deferred.doneUnsafe(ready, Effect.void);
             } else if (phase === "pong") {

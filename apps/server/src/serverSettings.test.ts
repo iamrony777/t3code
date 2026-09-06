@@ -236,6 +236,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         customModels: ["claude-custom"],
         launchArgs: "",
         autoCompactWindow: "",
+        usageKeepaliveHours: "6",
       });
       assert.deepEqual(
         next.textGenerationModelSelection,
@@ -927,6 +928,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         customModels: [],
         launchArgs: "",
         autoCompactWindow: "",
+        usageKeepaliveHours: "6",
       });
       assert.deepEqual(next.providers.opencode, {
         // OpenCode is disabled by default; this update only touches paths.

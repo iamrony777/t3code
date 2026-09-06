@@ -127,6 +127,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   customModels: [],
   launchArgs: "",
   autoCompactWindow: "",
+  usageKeepaliveHours: "6",
   ...overrides,
 });
 

@@ -44,7 +44,13 @@ export const USAGE_CONTRACT_VERSION = 6 as const;
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "commandcode"]);
+export const UsageProviderKind = Schema.Literals([
+  "claude",
+  "codex",
+  "grok",
+  "commandcode",
+  "opencode",
+]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /** Environment-local identity linking a usage bucket to one transcript source. */

@@ -43,6 +43,7 @@ import {
 } from "./claudeUsageLimits.ts";
 import {
   type ClaudeActiveUsageProbeError,
+  isClaudeSubscriptionQuotaProfile,
   shouldRunClaudeActiveUsageProbe,
 } from "./ClaudeActiveUsageProbe.ts";
 import {
@@ -570,29 +571,44 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+  const activeProbeCapabilities = {
+    subscriptionType: capabilities.subscriptionType,
+    tokenSource: capabilities.tokenSource,
+    apiProvider: capabilities.apiProvider,
+    rateLimitsAvailable: capabilities.usage?.rate_limits_available ?? false,
+    hasRateLimitWindows:
+      capabilities.usage?.rate_limits !== null &&
+      capabilities.usage?.rate_limits !== undefined &&
+      Object.keys(capabilities.usage.rate_limits).length > 0,
+  };
+  const passiveUnavailable = isClaudeSubscriptionQuotaProfile({
+    capabilities: activeProbeCapabilities,
+    environment: resolvedEnvironment,
+  })
+    ? {
+        reason: "probeFailed" as const,
+        message: "Claude subscription limits are temporarily unavailable.",
+      }
+    : undefined;
   let usageLimits = !capabilities.usage
     ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
     : scopedLimitNames
       ? yield* recordClaudeUsageResponse(scopedLimitNames, {
           response: capabilities.usage,
           checkedAt,
+          ...(passiveUnavailable ? { unavailable: passiveUnavailable } : {}),
         })
-      : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt }).limits;
+      : claudeUsageResponseToLimits({
+          response: capabilities.usage,
+          checkedAt,
+          ...(passiveUnavailable ? { unavailable: passiveUnavailable } : {}),
+        }).limits;
   if (
     activeUsage &&
     capabilities.usage &&
     shouldRunClaudeActiveUsageProbe({
       refreshUsageLimits: activeUsage.refreshUsageLimits,
-      capabilities: {
-        subscriptionType: capabilities.subscriptionType,
-        tokenSource: capabilities.tokenSource,
-        apiProvider: capabilities.apiProvider,
-        rateLimitsAvailable: capabilities.usage.rate_limits_available,
-        hasRateLimitWindows:
-          capabilities.usage.rate_limits !== null &&
-          capabilities.usage.rate_limits !== undefined &&
-          Object.keys(capabilities.usage.rate_limits).length > 0,
-      },
+      capabilities: activeProbeCapabilities,
       environment: resolvedEnvironment,
     })
   ) {

@@ -25,6 +25,7 @@ import {
   parseCodexLine,
   parseCommandCodeLine,
   parseGrokLine,
+  parseOpenCodeLine,
   type CodexScanState,
   type UsageRecord,
   type UsageScanProvider,
@@ -87,8 +88,8 @@ function fnv1a(buffer: Buffer): number {
 }
 
 /**
- * Lists `provider`'s `.jsonl` transcripts under `root` last modified at or
- * after `sinceMs`.
+ * Lists `provider`'s transcript files under `root` last modified at or after
+ * `sinceMs`. OpenCode's legacy messages are JSON; the other stores are JSONL.
  *
  * Errors on individual entries are swallowed: session files rotate and get
  * removed while the walk is in flight, and a partial listing is far better than
@@ -122,7 +123,9 @@ export async function listTranscriptFiles(
       }
       if (fileName !== undefined) {
         if (entry.name !== fileName) continue;
-      } else if (!entry.name.endsWith(".jsonl")) {
+      } else if (
+        provider === "opencode" ? !entry.name.endsWith(".json") : !entry.name.endsWith(".jsonl")
+      ) {
         continue;
       }
       // Command Code parks `<uuid>.checkpoints.jsonl` beside `<uuid>.jsonl`.
@@ -221,6 +224,23 @@ export async function readTranscriptRecords(
   const commandCodeSessionId = NodePath.basename(filePath, ".jsonl");
 
   try {
+    if (provider === "opencode") {
+      const content = await handle.readFile();
+      const record = parseOpenCodeLine(content.toString("utf8"));
+      const guardLength = Math.min(GUARD_LENGTH, content.length);
+      return {
+        records: record === null ? [] : [record],
+        tailRecords: [],
+        position: {
+          resumeOffset: content.length,
+          guardLength,
+          guardHash: guardLength === 0 ? 0 : fnv1a(content.subarray(content.length - guardLength)),
+          codexState: null,
+        },
+        resumed: false,
+      };
+    }
+
     let codexState = initialCodexScanState();
     let resumed = false;
     let start = 0;

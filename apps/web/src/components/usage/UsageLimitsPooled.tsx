@@ -2,7 +2,6 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
-  collectProviderAccountUsage,
   formatDuration,
   formatResetsIn,
   type LimitAccount,
@@ -29,7 +28,6 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
-import { ProviderAccountUsage } from "./ProviderAccountUsage";
 
 /** `someone@example.com` → `SE`: enough to tell accounts apart, too little to identify one. */
 function accountInitials(email: string): string {
@@ -552,7 +550,6 @@ export function UsageLimitsPooled({
 }) {
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations);
-  const accountUsage = collectProviderAccountUsage(presentations);
   return (
     <div className="flex flex-col gap-8">
       {pools.length === 0 ? (
@@ -563,19 +560,6 @@ export function UsageLimitsPooled({
       {pools.map((pool) => (
         <PoolSection key={pool.driver} pool={pool} now={now} />
       ))}
-      {accountUsage.length > 0 ? (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-medium text-foreground">Account usage</h2>
-          <div className="grid gap-3 xl:grid-cols-2">
-            {accountUsage.map((snapshot) => (
-              <ProviderAccountUsage
-                key={`${snapshot.environmentId}:${snapshot.provider.instanceId}`}
-                snapshot={snapshot}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
       <LimitNotices notices={notices} />
     </div>
   );

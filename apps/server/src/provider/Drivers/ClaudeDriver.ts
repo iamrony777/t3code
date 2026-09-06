@@ -380,6 +380,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
         );
 
+      const usageKeepaliveHours = Number(effectiveConfig.usageKeepaliveHours);
+      if (effectiveConfig.enabled && usageKeepaliveHours > 0) {
+        yield* Effect.forever(
+          Effect.sleep(Duration.hours(usageKeepaliveHours)).pipe(
+            Effect.andThen(refreshUsageLimits()),
+            Effect.ignoreCause({ log: true }),
+          ),
+        ).pipe(Effect.forkScoped);
+      }
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,

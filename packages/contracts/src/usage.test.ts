@@ -116,6 +116,16 @@ describe("UsageSummary forward compatibility", () => {
     expect(parsed.sources[0]?.profile?.displayName).toBe("Work");
   });
 
+  it("decodes OpenCode usage while older clients can omit it", () => {
+    const parsed = decodeUsageSummary({
+      ...summary,
+      buckets: [{ ...bucket("opencode"), model: "openrouter/deepseek/deepseek-v4" }],
+      sources: [source("opencode")],
+    });
+    expect(parsed.buckets[0]?.provider).toBe("opencode");
+    expect(parsed.sources[0]?.fingerprint.provider).toBe("opencode");
+  });
+
   it("keeps known supported providers while dropping future provider literals", () => {
     const parsed = decodeUsageSummaryInput({
       sinceDay: "2026-08-01",

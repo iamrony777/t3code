@@ -7,6 +7,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseCommandCodeLine,
+  parseOpenCodeLine,
   parseGrokLine,
   totalTokens,
 } from "./usageTranscripts.ts";
@@ -332,6 +333,51 @@ describe("parseCommandCodeLine", () => {
     // Claude and Command Code both carry a "usage" key; the model gate keeps
     // them from cross-parsing each other's transcripts.
     expect(mightCarryUsage(commandCodeLine({}), "claude")).toBe(true);
+  });
+});
+
+describe("parseOpenCodeLine", () => {
+  const message = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      id: "msg_123",
+      sessionID: "ses_456",
+      role: "assistant",
+      time: { created: 1_786_010_400_000 },
+      providerID: "deepseek",
+      modelID: "deepseek-v4-flash",
+      cost: 0.0125,
+      tokens: {
+        input: 100,
+        output: 20,
+        reasoning: 7,
+        cache: { read: 80, write: 4 },
+      },
+      ...overrides,
+    });
+
+  it("extracts provider-qualified model, native cost, and token classes", () => {
+    expect(parseOpenCodeLine(message())).toEqual({
+      provider: "opencode",
+      timestampMs: 1_786_010_400_000,
+      model: "deepseek/deepseek-v4-flash",
+      sessionId: "ses_456",
+      totals: {
+        uncachedInputTokens: 100,
+        cachedInputTokens: 80,
+        cacheCreationTokens: 4,
+        outputTokens: 20,
+        reasoningTokens: 7,
+      },
+      reportedCostUsd: 0.0125,
+      dedupeKey: "opencode:msg_123",
+    });
+  });
+
+  it("accepts zero cost and rejects malformed or non-assistant messages", () => {
+    expect(parseOpenCodeLine(message({ cost: 0 }))?.reportedCostUsd).toBe(0);
+    expect(parseOpenCodeLine(message({ role: "user" }))).toBeNull();
+    expect(parseOpenCodeLine(message({ providerID: "" }))).toBeNull();
+    expect(parseOpenCodeLine("not json")).toBeNull();
   });
 });
 

@@ -1,9 +1,9 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
- * turns driven outside T3 Code too. This is the approach `ccusage` takes.
+ * The scan reads the provider CLIs' own session stores rather than T3 Code's
+ * orchestration projections, so usage covers turns driven outside T3 Code too.
+ * This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -16,7 +16,9 @@ import * as NodeOS from "node:os";
 
 import {
   ClaudeSettings,
+  OpenCodeSettings,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
   USAGE_CONTRACT_VERSION,
   type ProviderInstanceConfigMap,
   type ServerSettings as ServerSettingsValue,
@@ -54,6 +56,7 @@ import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEn
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import { readOpenCodeDatabaseRecords, resolveOpenCodeStorePaths } from "./openCodeUsage.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -104,6 +107,7 @@ const ScanCacheJson = Schema.fromJsonString(Schema.Unknown as unknown as Schema.
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+const decodeOpenCodeSettings = Schema.decodeUnknownOption(OpenCodeSettings);
 
 interface TranscriptDir {
   readonly provider: UsageScanProvider;
@@ -111,6 +115,8 @@ interface TranscriptDir {
   readonly fileName?: string;
   readonly sourceId?: UsageSourceId;
   readonly profile?: UsageSourceProfile;
+  readonly databasePath?: string;
+  readonly unavailableMessage?: string;
 }
 
 interface ResolvedTranscriptDir extends TranscriptDir {
@@ -317,20 +323,88 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const resolveOpenCodeTranscriptDirs = (
+    providerInstances: ProviderInstanceConfigMap,
+  ): readonly TranscriptDir[] => {
+    const instances = Object.entries(providerInstances)
+      .filter(
+        ([, instance]) =>
+          instance.driver === "opencode" && resolveProviderInstanceEnabled(instance),
+      )
+      .sort(compareInstanceIds);
+    const dirs = new Map<string, TranscriptDir>();
+    for (const [instanceId, instance] of instances) {
+      const decoded = decodeOpenCodeSettings(instance.config ?? {});
+      if (Option.isNone(decoded)) continue;
+      const profile: UsageSourceProfile = {
+        instanceId: ProviderInstanceId.make(instanceId),
+        ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+        ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+      };
+      if (decoded.value.serverUrl.trim().length > 0) {
+        const key = `remote:${decoded.value.serverUrl}`;
+        if (!dirs.has(key)) {
+          dirs.set(key, {
+            provider: "opencode",
+            dir: decoded.value.serverUrl,
+            sourceId: UsageSourceId.make(instanceId),
+            profile,
+            unavailableMessage: "Remote OpenCode history is not stored on this environment.",
+          });
+        }
+        continue;
+      }
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+      const store = resolveOpenCodeStorePaths(environment);
+      if (store === null) continue;
+      const key = `${store.dataDir}\0${store.databasePath}`;
+      if (dirs.has(key)) continue;
+      dirs.set(key, {
+        provider: "opencode",
+        dir: store.legacyMessagesDir,
+        databasePath: store.databasePath,
+        sourceId: UsageSourceId.make(instanceId),
+        profile,
+      });
+    }
+    return [...dirs.values()];
+  };
+
   /** Canonicalize existing roots and collapse aliases before walking either path. */
   const canonicalizeTranscriptDirs = Effect.fn("UsageService.canonicalizeTranscriptDirs")(
     function* (dirs: readonly TranscriptDir[]) {
       const canonical: ResolvedTranscriptDir[] = [];
       const seen = new Set<string>();
       for (const source of dirs) {
+        if (source.unavailableMessage !== undefined) {
+          const key = `${source.provider}\0remote:${source.dir}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            canonical.push({ ...source, volumeId: "" });
+          }
+          continue;
+        }
         const resolved = path.resolve(source.dir);
         const dir = yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved));
-        const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
-        const identity = volumeId.length > 0 ? `inode:${volumeId}` : `path:${dir}`;
+        const configuredDatabasePath = source.databasePath;
+        const resolvedDatabasePath =
+          configuredDatabasePath === undefined
+            ? undefined
+            : yield* fileSystem
+                .realPath(path.resolve(configuredDatabasePath))
+                .pipe(Effect.orElseSucceed(() => path.resolve(configuredDatabasePath)));
+        const identityPath = resolvedDatabasePath ?? dir;
+        const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(identityPath));
+        const identity = volumeId.length > 0 ? `inode:${volumeId}` : `path:${identityPath}`;
         const key = `${source.provider}\0${identity}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        canonical.push({ ...source, dir, volumeId });
+        canonical.push({
+          ...source,
+          dir,
+          ...(resolvedDatabasePath === undefined ? {} : { databasePath: resolvedDatabasePath }),
+          volumeId,
+        });
       }
       return canonical;
     },
@@ -374,6 +448,7 @@ export const make = Effect.gen(function* () {
     ];
 
     dirs.push(...resolveCommandCodeTranscriptDirs(providerInstances));
+    dirs.push(...resolveOpenCodeTranscriptDirs(providerInstances));
 
     return yield* canonicalizeTranscriptDirs(dirs);
   });
@@ -481,6 +556,8 @@ export const make = Effect.gen(function* () {
     readonly volumeId: string;
     readonly sourceId?: UsageSourceId;
     readonly profile?: UsageSourceProfile;
+    readonly status?: "ok" | "partial" | "failed";
+    readonly message?: string;
     /** Parsed records per file, or `null` when the directory does not exist. */
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
@@ -492,11 +569,39 @@ export const make = Effect.gen(function* () {
     dirs: readonly ResolvedTranscriptDir[],
   ) {
     const scanned: ScannedDir[] = [];
-    for (const { provider, dir, fileName, sourceId, profile, volumeId } of dirs) {
+    for (const {
+      provider,
+      dir,
+      fileName,
+      sourceId,
+      profile,
+      volumeId,
+      databasePath,
+      unavailableMessage,
+    } of dirs) {
+      if (unavailableMessage !== undefined) {
+        scanned.push({
+          provider,
+          dir,
+          volumeId,
+          ...(sourceId === undefined ? {} : { sourceId }),
+          ...(profile === undefined ? {} : { profile }),
+          files: null,
+          status: "failed",
+          message: unavailableMessage,
+        });
+        continue;
+      }
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      if (!exists) {
+      const databaseExists =
+        databasePath === undefined
+          ? false
+          : yield* fileSystem
+              .exists(databasePath)
+              .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      if (!exists && !databaseExists) {
         scanned.push({
           provider,
           dir,
@@ -507,15 +612,31 @@ export const make = Effect.gen(function* () {
         });
         continue;
       }
-      const files = yield* Effect.promise(() =>
-        listTranscriptFiles(
-          dir,
-          windowStartMs,
-          provider,
-          fileName === undefined ? undefined : { fileName },
-        ),
-      );
+      const files = exists
+        ? yield* Effect.promise(() =>
+            listTranscriptFiles(
+              dir,
+              windowStartMs,
+              provider,
+              fileName === undefined ? undefined : { fileName },
+            ),
+          )
+        : [];
       const parsedFiles: { path: string; records: readonly UsageRecord[] }[] = [];
+      let status: ScannedDir["status"] = "ok";
+      let message: string | undefined;
+      if (databasePath !== undefined && databaseExists) {
+        const databaseRecords = yield* readOpenCodeDatabaseRecords(
+          databasePath,
+          windowStartMs,
+        ).pipe(Effect.catchCause(() => Effect.succeed(null)));
+        if (databaseRecords === null) {
+          status = exists ? "partial" : "failed";
+          message = "OpenCode database could not be read; legacy history may be incomplete.";
+        } else {
+          parsedFiles.push({ path: databasePath, records: databaseRecords });
+        }
+      }
       for (const file of files) {
         const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         parsedFiles.push({ path: file.path, records });
@@ -527,6 +648,8 @@ export const make = Effect.gen(function* () {
         ...(sourceId === undefined ? {} : { sourceId }),
         ...(profile === undefined ? {} : { profile }),
         files: parsedFiles,
+        ...(status === undefined ? {} : { status }),
+        ...(message === undefined ? {} : { message }),
       });
     }
     return scanned;
@@ -597,18 +720,27 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, volumeId, sourceId, profile, files } of scannedDirs) {
+    for (const {
+      provider,
+      dir,
+      volumeId,
+      sourceId,
+      profile,
+      files,
+      status,
+      message,
+    } of scannedDirs) {
       if (files === null) {
         sources.push({
           ...(sourceId === undefined ? {} : { sourceId }),
           ...(profile === undefined ? {} : { profile }),
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-          status: "missing",
+          status: status ?? "missing",
           scannedFiles: 0,
           skippedFiles: 0,
           malformedRecords: 0,
           distinctSessions: 0,
-          message: "No transcript directory on this environment.",
+          message: message ?? "No transcript directory on this environment.",
         });
         continue;
       }
@@ -640,12 +772,12 @@ export const make = Effect.gen(function* () {
         ...(sourceId === undefined ? {} : { sourceId }),
         ...(profile === undefined ? {} : { profile }),
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-        status: "ok",
+        status: status ?? "ok",
         scannedFiles,
         skippedFiles,
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
-        message: null,
+        message: message ?? null,
       });
     }
 

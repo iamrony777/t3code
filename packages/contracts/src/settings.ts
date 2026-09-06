@@ -507,6 +507,7 @@ export type CodexSettings = typeof CodexSettings.Type;
 // Claude settings schema and its patch so an out-of-range value fails at
 // the update that introduced it.
 const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
+const CLAUDE_USAGE_KEEPALIVE_HOURS_PATTERN = /^(?:[0-9]|1[0-9]|2[0-4])$/;
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
@@ -559,9 +560,22 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    usageKeepaliveHours: TrimmedString.check(
+      Schema.isPattern(CLAUDE_USAGE_KEEPALIVE_HOURS_PATTERN),
+    ).pipe(
+      Schema.withDecodingDefault(Effect.succeed("6")),
+      Schema.annotateKey({
+        title: "Usage keepalive interval",
+        description: "Hours between isolated Claude subscription refresh turns. Set 0 to disable.",
+        providerSettingsForm: {
+          placeholder: "6",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "usageKeepaliveHours", "autoCompactWindow", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1180,6 +1194,9 @@ const ClaudeSettingsPatch = Schema.Struct({
   // schema error instead of a generic whole-settings failure.
   autoCompactWindow: Schema.optionalKey(
     TrimmedString.check(Schema.isPattern(CLAUDE_AUTO_COMPACT_WINDOW_PATTERN)),
+  ),
+  usageKeepaliveHours: Schema.optionalKey(
+    TrimmedString.check(Schema.isPattern(CLAUDE_USAGE_KEEPALIVE_HOURS_PATTERN)),
   ),
 });
 

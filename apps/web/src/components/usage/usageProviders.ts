@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, CommandCodeIcon, GrokIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CommandCodeIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -28,6 +28,11 @@ export const PROVIDER_PRESENTATION = {
     label: "Command Code",
     color: "#7c3aed",
     mark: CommandCodeIcon,
+  },
+  opencode: {
+    label: "OpenCode",
+    color: "#059669",
+    mark: OpenCodeIcon,
   },
   grok: {
     label: "Grok Build",

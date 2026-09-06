@@ -95,6 +95,26 @@ describe("claudeUsageResponseToLimits", () => {
     ).toEqual({ checkedAt, windows: [], unavailable: { reason: "unsupported" } });
   });
 
+  it("reports a confirmed subscription's missing passive windows as temporary", () => {
+    expect(
+      claudeUsageResponseToLimits({
+        checkedAt,
+        response: { rate_limits_available: true, rate_limits: null },
+        unavailable: {
+          reason: "probeFailed",
+          message: "Claude subscription limits are temporarily unavailable.",
+        },
+      }).limits,
+    ).toEqual({
+      checkedAt,
+      windows: [],
+      unavailable: {
+        reason: "probeFailed",
+        message: "Claude subscription limits are temporarily unavailable.",
+      },
+    });
+  });
+
   it("skips a window the endpoint reports without a utilization", () => {
     expect(
       claudeUsageResponseToLimits({

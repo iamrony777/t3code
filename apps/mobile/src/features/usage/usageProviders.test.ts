@@ -11,6 +11,7 @@ describe("mobile usage provider presentation", () => {
   it("covers every usage provider and names Command Code", () => {
     expect([...PROVIDER_ORDER].sort()).toEqual([...UsageProviderKind.literals].sort());
     expect(PROVIDER_LABEL.commandcode).toBe("Command Code");
+    expect(PROVIDER_LABEL.opencode).toBe("OpenCode");
   });
 
   it("keeps Command Code distinct from the neutral providers in both themes", () => {

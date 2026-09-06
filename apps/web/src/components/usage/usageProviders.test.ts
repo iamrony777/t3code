@@ -16,5 +16,7 @@ describe("PROVIDER_ORDER", () => {
     expect(PROVIDER_PRESENTATION.commandcode.label).toBe("Command Code");
     expect(PROVIDER_PRESENTATION.commandcode.color).not.toBe(PROVIDER_PRESENTATION.codex.color);
     expect(PROVIDER_PRESENTATION.commandcode.mark).toBeTypeOf("function");
+    expect(PROVIDER_PRESENTATION.opencode.label).toBe("OpenCode");
+    expect(PROVIDER_PRESENTATION.opencode.mark).toBeTypeOf("function");
   });
 });

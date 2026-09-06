@@ -77,6 +77,19 @@ describe("ServerSettings usage price overrides", () => {
   });
 });
 
+describe("Claude usage keepalive", () => {
+  it("defaults to six hours and accepts zero to disable it", () => {
+    expect(decodeClaudeSettings({}).usageKeepaliveHours).toBe("6");
+    expect(decodeClaudeSettings({ usageKeepaliveHours: "0" }).usageKeepaliveHours).toBe("0");
+  });
+
+  it("rejects invalid intervals", () => {
+    for (const value of ["-1", "1.5", "25", "nope"]) {
+      expect(() => decodeClaudeSettings({ usageKeepaliveHours: value })).toThrow();
+    }
+  });
+});
+
 describe("custom model settings", () => {
   const capabilities = {
     optionDescriptors: [

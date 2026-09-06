@@ -15,6 +15,7 @@ import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
 import * as NodePtyAdapter from "../../terminal/NodePtyAdapter.ts";
 
 import {
+  isClaudeSubscriptionQuotaProfile,
   makeClaudeActiveUsageProbe,
   parseClaudeUsageTuiOutput,
   resolveClaudeActiveUsageProbeLaunch,
@@ -30,6 +31,27 @@ const subscriptionCapabilities = {
 };
 
 describe("shouldRunClaudeActiveUsageProbe", () => {
+  it("classifies only first-party OAuth subscriptions as quota profiles", () => {
+    expect(
+      isClaudeSubscriptionQuotaProfile({
+        capabilities: subscriptionCapabilities,
+        environment: {},
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeSubscriptionQuotaProfile({
+        capabilities: { ...subscriptionCapabilities, tokenSource: "api-key" },
+        environment: {},
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeSubscriptionQuotaProfile({
+        capabilities: subscriptionCapabilities,
+        environment: { ANTHROPIC_BASE_URL: "https://proxy.example.test" },
+      }),
+    ).toBe(false);
+  });
+
   it("requires an explicit manual limits refresh", () => {
     expect(
       shouldRunClaudeActiveUsageProbe({

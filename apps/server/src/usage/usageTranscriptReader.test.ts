@@ -74,6 +74,34 @@ describe("formatDirectoryVolumeId", () => {
 });
 
 describe("readTranscriptRecords resume", () => {
+  it("parses one pretty-printed OpenCode message file", async () => {
+    const path = NodePath.join(dir, "msg_123.json");
+    await NodeFSP.writeFile(
+      path,
+      JSON.stringify(
+        {
+          id: "msg_123",
+          sessionID: "ses_456",
+          role: "assistant",
+          time: { created: 1_786_010_400_000 },
+          providerID: "openrouter",
+          modelID: "deepseek/deepseek-v4",
+          cost: 0.1,
+          tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 8, write: 0 } },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const parsed = await readTranscriptRecords(path, "opencode");
+    assert.isNotNull(parsed);
+    assert.strictEqual(parsed.records.length, 1);
+    assert.strictEqual(parsed.records[0]?.model, "openrouter/deepseek/deepseek-v4");
+    assert.strictEqual(parsed.tailRecords.length, 0);
+    assert.isFalse(parsed.resumed);
+  });
+
   it("parses only appended lines when resuming a grown file", async () => {
     const path = NodePath.join(dir, "claude.jsonl");
     await NodeFSP.writeFile(path, claudeLine(1, 5) + claudeLine(2, 7));
@@ -248,6 +276,12 @@ describe("listTranscriptFiles", () => {
     assert.deepStrictEqual(names(await listTranscriptFiles(dir, 0, "claude")), [
       `${sessionId}.checkpoints.jsonl`,
       `${sessionId}.jsonl`,
+    ]);
+  });
+
+  it("lists JSON files for OpenCode", async () => {
+    assert.deepStrictEqual(names(await listTranscriptFiles(dir, 0, "opencode")), [
+      `${sessionId}.meta.json`,
     ]);
   });
 });

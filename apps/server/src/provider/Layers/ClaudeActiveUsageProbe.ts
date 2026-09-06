@@ -97,6 +97,19 @@ function isFirstPartyOAuthToken(tokenSource: string | undefined): boolean {
   return normalized === undefined || normalized === "oauth" || normalized === "claudeai";
 }
 
+export function isClaudeSubscriptionQuotaProfile(input: {
+  readonly capabilities: ClaudeActiveUsageProbeCapabilities;
+  readonly environment: NodeJS.ProcessEnv;
+}): boolean {
+  const { capabilities, environment } = input;
+  return (
+    capabilities.apiProvider === "firstParty" &&
+    isPaidClaudeSubscription(capabilities.subscriptionType) &&
+    isFirstPartyOAuthToken(capabilities.tokenSource) &&
+    !API_BILLING_ENVIRONMENT_VARIABLES.some((name) => hasEnvironmentValue(environment, name))
+  );
+}
+
 export function shouldRunClaudeActiveUsageProbe(input: {
   readonly refreshUsageLimits: boolean;
   readonly capabilities: ClaudeActiveUsageProbeCapabilities;
@@ -107,10 +120,7 @@ export function shouldRunClaudeActiveUsageProbe(input: {
     input.refreshUsageLimits &&
     capabilities.rateLimitsAvailable &&
     !capabilities.hasRateLimitWindows &&
-    capabilities.apiProvider === "firstParty" &&
-    isPaidClaudeSubscription(capabilities.subscriptionType) &&
-    isFirstPartyOAuthToken(capabilities.tokenSource) &&
-    !API_BILLING_ENVIRONMENT_VARIABLES.some((name) => hasEnvironmentValue(environment, name))
+    isClaudeSubscriptionQuotaProfile({ capabilities, environment })
   );
 }
 

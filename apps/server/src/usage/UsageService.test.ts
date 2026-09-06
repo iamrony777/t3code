@@ -3,6 +3,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -73,6 +74,19 @@ function grokLine(outputTokens: number): string {
       _meta: { agentTimestampMs: Date.parse("2026-08-01T10:00:00Z") },
     },
   })}\n`;
+}
+
+function openCodeMessage(id: string, providerID: string, modelID: string, outputTokens: number) {
+  return JSON.stringify({
+    id,
+    sessionID: "opencode-session",
+    role: "assistant",
+    time: { created: Date.parse("2026-08-01T10:00:00Z") },
+    providerID,
+    modelID,
+    cost: 0.02,
+    tokens: { input: 20, output: outputTokens, reasoning: 2, cache: { read: 5, write: 1 } },
+  });
 }
 
 const WINDOW: UsageSummaryInput = {
@@ -283,6 +297,7 @@ describe("UsageService", () => {
       const sharedClaudeHome = NodePath.join(home, "claude-shared");
       const envClaudeHome = NodePath.join(home, "claude-env");
       const commandHome = NodePath.join(home, "command-home");
+      const openCodeHome = NodePath.join(home, "opencode-home");
       const transcriptFiles = [
         [NodePath.join(legacyClaudeHome, "projects", "legacy", "session.jsonl"), claudeLine(1, 5)],
         [NodePath.join(sharedClaudeHome, "projects", "shared", "session.jsonl"), claudeLine(2, 7)],
@@ -292,11 +307,51 @@ describe("UsageService", () => {
           commandCodeLine(13),
         ],
         [NodePath.join(home, "grok", "sessions", "grok-session", "updates.jsonl"), grokLine(17)],
+        [
+          NodePath.join(
+            openCodeHome,
+            ".local",
+            "share",
+            "opencode",
+            "storage",
+            "message",
+            "opencode-session",
+            "msg-openrouter.json",
+          ),
+          openCodeMessage("msg-openrouter", "openrouter", "deepseek/deepseek-chat", 19),
+        ],
       ] as const;
       for (const [file, contents] of transcriptFiles) {
         yield* Effect.promise(() => NodeFSP.mkdir(NodePath.dirname(file), { recursive: true }));
         yield* Effect.promise(() => NodeFSP.writeFile(file, contents));
       }
+      yield* Effect.sync(() => {
+        const database = new DatabaseSync(
+          NodePath.join(openCodeHome, ".local", "share", "opencode", "opencode.db"),
+        );
+        database.exec(
+          "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)",
+        );
+        const insert = database.prepare(
+          "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+        );
+        const created = Date.parse("2026-08-01T10:00:00Z");
+        insert.run(
+          "msg-openrouter",
+          "opencode-session",
+          created,
+          created,
+          openCodeMessage("msg-openrouter", "openrouter", "deepseek/deepseek-chat", 19),
+        );
+        insert.run(
+          "msg-deepseek",
+          "opencode-session",
+          created,
+          created,
+          openCodeMessage("msg-deepseek", "deepseek", "deepseek-chat", 23),
+        );
+        database.close();
+      });
       const settings = {
         providers: {
           claudeAgent: { homePath: legacyClaudeHome },
@@ -334,6 +389,27 @@ describe("UsageService", () => {
             environment: [{ name: "HOME", value: commandHome, sensitive: false }],
             config: {},
           },
+          opencode_local: {
+            driver: "opencode",
+            enabled: true,
+            displayName: "OpenCode APIs",
+            accentColor: "#10b981",
+            environment: [{ name: "HOME", value: openCodeHome, sensitive: false }],
+            config: {},
+          },
+          opencode_remote: {
+            driver: "opencode",
+            enabled: true,
+            displayName: "Remote OpenCode",
+            config: { serverUrl: "https://opencode.example.test" },
+          },
+          opencode_z_duplicate: {
+            driver: "opencode",
+            enabled: true,
+            displayName: "Duplicate OpenCode",
+            environment: [{ name: "HOME", value: openCodeHome, sensitive: false }],
+            config: {},
+          },
         },
       } as const;
 
@@ -356,11 +432,11 @@ describe("UsageService", () => {
       });
       assert.deepStrictEqual(
         [...new Set(negotiated.sources.map((source) => source.fingerprint.provider))].sort(),
-        ["claude", "codex", "commandcode", "grok"],
+        ["claude", "codex", "commandcode", "grok", "opencode"],
       );
       assert.deepStrictEqual(
         [...new Set(negotiated.buckets.map((bucket) => bucket.provider))].sort(),
-        ["claude", "commandcode", "grok"],
+        ["claude", "commandcode", "grok", "opencode"],
       );
 
       const claudeSources = negotiated.sources.filter(
@@ -405,6 +481,13 @@ describe("UsageService", () => {
       const commandSources = negotiated.sources.filter(
         (source) => source.fingerprint.provider === "commandcode",
       );
+      const openCodeSources = negotiated.sources.filter(
+        (source) => source.fingerprint.provider === "opencode",
+      );
+      assert.strictEqual(openCodeSources.length, 2);
+      assert.strictEqual(openCodeSources[0]?.profile?.displayName, "OpenCode APIs");
+      assert.strictEqual(openCodeSources[1]?.status, "failed");
+      assert.match(openCodeSources[1]?.message ?? "", /Remote OpenCode history/);
       assert.deepStrictEqual(
         commandSources.map((source) => ({
           sourceId: source.sourceId,
@@ -432,6 +515,8 @@ describe("UsageService", () => {
           ["claude", UsageSourceId.make("claudeAgent")],
           ["commandcode", UsageSourceId.make("command_work")],
           ["grok", undefined],
+          ["opencode", UsageSourceId.make("opencode_local")],
+          ["opencode", UsageSourceId.make("opencode_local")],
         ],
       );
     }).pipe(Effect.scoped),

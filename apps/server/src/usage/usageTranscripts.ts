@@ -73,6 +73,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageScanProvider): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "commandcode") return line.includes('"usage"') && line.includes('"model"');
+  if (provider === "opencode") return line.includes('"tokens"') && line.includes('"providerID"');
   if (provider === "grok") return line.includes('"turn_completed"');
   return line.includes('"token_count"');
 }
@@ -150,6 +151,68 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* OpenCode                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export function parseOpenCodeLine(line: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  if (record.role !== "assistant") return null;
+
+  const providerId = typeof record.providerID === "string" ? record.providerID.trim() : "";
+  const modelId = typeof record.modelID === "string" ? record.modelID.trim() : "";
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const sessionId = typeof record.sessionID === "string" ? record.sessionID.trim() : "";
+  const time =
+    typeof record.time === "object" && record.time !== null
+      ? (record.time as Record<string, unknown>)
+      : undefined;
+  const timestampMs = typeof time?.created === "number" ? time.created : Number.NaN;
+  const tokens =
+    typeof record.tokens === "object" && record.tokens !== null
+      ? (record.tokens as Record<string, unknown>)
+      : undefined;
+  const cache =
+    typeof tokens?.cache === "object" && tokens.cache !== null
+      ? (tokens.cache as Record<string, unknown>)
+      : undefined;
+  if (
+    providerId.length === 0 ||
+    modelId.length === 0 ||
+    id.length === 0 ||
+    !Number.isFinite(timestampMs) ||
+    !tokens
+  ) {
+    return null;
+  }
+
+  const output = int(tokens.output);
+  const reasoning = int(tokens.reasoning);
+  const cost = record.cost;
+  return {
+    provider: "opencode",
+    timestampMs,
+    model: `${providerId}/${modelId}`,
+    sessionId,
+    totals: {
+      uncachedInputTokens: int(tokens.input),
+      cachedInputTokens: int(cache?.read),
+      cacheCreationTokens: int(cache?.write),
+      outputTokens: output,
+      reasoningTokens: Math.min(output, reasoning),
+    },
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
+    dedupeKey: `opencode:${id}`,
   };
 }
 

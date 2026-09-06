@@ -157,11 +157,16 @@ export function claudeRateLimitEventToUpdate(
 export function claudeUsageResponseToLimits(input: {
   readonly response: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
   readonly checkedAt: string;
+  readonly unavailable?: {
+    readonly reason: "unsupported" | "probeFailed";
+    readonly message?: string;
+  };
 }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
   const { response, checkedAt } = input;
   if (!response.rate_limits_available || !response.rate_limits) {
+    const unavailable = input.unavailable ?? { reason: "unsupported" as const };
     return {
-      limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+      limits: makeUnavailableUsageLimits({ checkedAt, ...unavailable }),
       names: { overageIncluded: undefined },
     };
   }

@@ -2,6 +2,7 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
+  collectProviderAccountUsage,
   formatDuration,
   formatResetsIn,
   type LimitAccount,
@@ -28,6 +29,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
+import { ProviderAccountUsage } from "./ProviderAccountUsage";
 
 /** `someone@example.com` → `SE`: enough to tell accounts apart, too little to identify one. */
 function accountInitials(email: string): string {
@@ -100,7 +102,9 @@ function AccountName({
   readonly account: LimitAccount;
   readonly className?: string;
 }) {
-  if (account.displayName) return <span className={className}>{account.displayName}</span>;
+  if (account.displayName || account.accountLabel) {
+    return <span className={className}>{account.displayName ?? account.accountLabel}</span>;
+  }
   if (account.email) {
     return (
       <span className={cn("inline-flex min-w-0 items-center", className)}>
@@ -160,7 +164,10 @@ function SegmentPopover({
         <span className="flex items-center gap-2 text-sm font-medium text-foreground">
           <AccountAvatar account={account} />
           <span className="truncate">
-            {account.displayName ?? getDriverOption(account.driver)?.label ?? account.driver}
+            {account.displayName ??
+              account.accountLabel ??
+              getDriverOption(account.driver)?.label ??
+              account.driver}
           </span>
         </span>
         {account.email ? (
@@ -174,6 +181,9 @@ function SegmentPopover({
         ) : null}
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
+        {account.accountLabel && account.accountLabel !== account.displayName ? (
+          <Row label="Account">{account.accountLabel}</Row>
+        ) : null}
         {account.plan ? <Row label="Plan">{account.plan}</Row> : null}
         {where ? (
           <Row label={account.environments.length > 0 ? "Signed in" : "Via"}>{where}</Row>
@@ -244,7 +254,7 @@ function PoolSegment({
           <button
             type="button"
             style={{ gridColumn: index, gridRow: 1 }}
-            aria-label={`${account.displayName ?? (account.email ? accountInitials(account.email) : account.driver)}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}`}
+            aria-label={`${account.displayName ?? account.accountLabel ?? (account.email ? accountInitials(account.email) : account.driver)}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}`}
             className="relative h-5 min-w-0 cursor-pointer overflow-hidden rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-border @2xl/pool:h-8"
           />
         }
@@ -542,6 +552,7 @@ export function UsageLimitsPooled({
 }) {
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations);
+  const accountUsage = collectProviderAccountUsage(presentations);
   return (
     <div className="flex flex-col gap-8">
       {pools.length === 0 ? (
@@ -552,6 +563,19 @@ export function UsageLimitsPooled({
       {pools.map((pool) => (
         <PoolSection key={pool.driver} pool={pool} now={now} />
       ))}
+      {accountUsage.length > 0 ? (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium text-foreground">Account usage</h2>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {accountUsage.map((snapshot) => (
+              <ProviderAccountUsage
+                key={`${snapshot.environmentId}:${snapshot.provider.instanceId}`}
+                snapshot={snapshot}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
       <LimitNotices notices={notices} />
     </div>
   );

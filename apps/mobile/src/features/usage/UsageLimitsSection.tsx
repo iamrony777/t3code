@@ -12,6 +12,7 @@ import type {
 import {
   collectLimitSources,
   collectLimitsGroups,
+  collectProviderAccountUsage,
   elapsedShare,
   formatDuration,
   formatResetsIn,
@@ -29,18 +30,27 @@ import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import {
+  DRIVER_LABEL,
+  presentAccountUsage,
+  providerLimitsDetail,
+} from "./accountUsagePresentation";
 import { useProviderColors } from "./usageProviders";
 
 const PACE_LABEL = { ahead: "ahead of pace", on: "on pace", under: "under pace" } as const;
-const DRIVER_LABEL: Partial<Record<string, string>> = { codex: "Codex", claudeAgent: "Claude" };
-
 type Driver = ServerProvider["driver"];
 
 /** The series colour the usage chart uses for this driver, so the two views read as one. */
 function useBarColor(driver: Driver): string | null {
   const colors = useProviderColors();
   const kind: UsageProviderKind | null =
-    driver === "codex" ? "codex" : driver === "claudeAgent" ? "claude" : null;
+    driver === "codex"
+      ? "codex"
+      : driver === "claudeAgent"
+        ? "claude"
+        : driver === "commandcode"
+          ? "commandcode"
+          : null;
   return kind ? colors[kind] : null;
 }
 
@@ -269,7 +279,7 @@ function ProviderLimits(props: {
       driver={provider.driver}
       label={DRIVER_LABEL[provider.driver] ?? String(provider.driver)}
       instanceLabel={providerLimitsLabel(provider, (driver) => DRIVER_LABEL[driver])}
-      detail={provider.auth.label}
+      detail={providerLimitsDetail(provider)}
       limits={provider.usageLimits}
       now={now}
       first={props.first}
@@ -307,6 +317,45 @@ function SourceAccountLimits(props: {
   );
 }
 
+function AccountUsageDetails(props: {
+  readonly snapshot: ReturnType<typeof collectProviderAccountUsage>[number];
+  readonly first: boolean;
+}) {
+  const { provider } = props.snapshot;
+  const presentation = presentAccountUsage(props.snapshot);
+
+  return (
+    <View className={props.first ? "gap-3 p-4" : "gap-3 border-t border-border-subtle p-4"}>
+      <View className="flex-row items-center gap-2">
+        <ProviderIcon provider={provider.driver} size={16} />
+        <View className="min-w-0 flex-1">
+          <Text className="text-base font-t3-medium text-foreground" numberOfLines={1}>
+            {presentation.label}
+          </Text>
+          <Text className="text-xs text-foreground-tertiary" numberOfLines={1}>
+            {presentation.context}
+          </Text>
+        </View>
+      </View>
+      {presentation.unavailable ? (
+        <Text className="text-sm text-foreground-muted">{presentation.unavailable}</Text>
+      ) : null}
+      {presentation.rows.map((row) => (
+        <DetailRow key={row.label} label={row.label} value={row.value} />
+      ))}
+    </View>
+  );
+}
+
+function DetailRow(props: { readonly label: string; readonly value: string }) {
+  return (
+    <View className="flex-row items-start justify-between gap-4">
+      <Text className="text-sm text-foreground-muted">{props.label}</Text>
+      <Text className="shrink text-right text-sm tabular-nums text-foreground">{props.value}</Text>
+    </View>
+  );
+}
+
 /**
  * Re-probes every provider (and usage-limit source) on each connected
  * environment; the fresh snapshots then arrive over the config stream.
@@ -332,7 +381,9 @@ export function useRefreshLimits() {
     setRefreshing(true);
     try {
       const results = await Promise.all(
-        connected.map(([environmentId]) => refreshProviders({ environmentId, input: {} })),
+        connected.map(([environmentId]) =>
+          refreshProviders({ environmentId, input: { refreshUsageLimits: true } }),
+        ),
       );
       setFailedLabels(
         connected
@@ -359,8 +410,9 @@ export function UsageLimitsSection(props: {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const groups = collectLimitsGroups(presentations);
   const sources = collectLimitSources(presentations);
+  const accountUsage = collectProviderAccountUsage(presentations);
 
-  if (groups.length === 0 && sources.length === 0) {
+  if (groups.length === 0 && sources.length === 0 && accountUsage.length === 0) {
     return (
       <Text className="py-16 text-center text-base text-foreground-muted">
         No provider on a connected environment reports subscription limits.
@@ -394,6 +446,17 @@ export function UsageLimitsSection(props: {
           ))}
         </SettingsSection>
       ))}
+      {accountUsage.length > 0 ? (
+        <SettingsSection title="Account usage" card>
+          {accountUsage.map((snapshot, index) => (
+            <AccountUsageDetails
+              key={`${snapshot.environmentId}:${snapshot.provider.instanceId}`}
+              snapshot={snapshot}
+              first={index === 0}
+            />
+          ))}
+        </SettingsSection>
+      ) : null}
       {sources.map((source) => (
         <SettingsSection key={source.key} card>
           {source.error ? (

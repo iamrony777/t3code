@@ -9,6 +9,7 @@ import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
+  resolveClaudeConfigDirectoryPath,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
@@ -21,6 +22,28 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
         expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
+      }),
+    );
+
+    it.effect("resolves the actual config directory used for isolated credential copying", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+
+        expect(
+          yield* resolveClaudeConfigDirectoryPath({ homePath: "" }, { HOME: "/profiles/default" }),
+        ).toBe(path.resolve("/profiles/default", ".claude"));
+        expect(
+          yield* resolveClaudeConfigDirectoryPath(
+            { homePath: "" },
+            { HOME: "/profiles/default", CLAUDE_CONFIG_DIR: "/profiles/explicit" },
+          ),
+        ).toBe(path.resolve("/profiles/explicit"));
+        expect(
+          yield* resolveClaudeConfigDirectoryPath(
+            { homePath: "/profiles/configured" },
+            { HOME: "/profiles/default", CLAUDE_CONFIG_DIR: "/profiles/ambient" },
+          ),
+        ).toBe(path.resolve("/profiles/configured"));
       }),
     );
 

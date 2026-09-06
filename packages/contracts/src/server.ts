@@ -192,6 +192,46 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+const NonNegativeNumber = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
+
+const ServerProviderAccountUsageCredits = Schema.Struct({
+  total: Schema.optional(NonNegativeNumber),
+  free: Schema.optional(NonNegativeNumber),
+  monthly: Schema.optional(NonNegativeNumber),
+  purchased: Schema.optional(NonNegativeNumber),
+});
+
+/** Detailed account usage reported by a provider's authenticated API. */
+export const ServerProviderAccountUsage = Schema.Struct({
+  checkedAt: IsoDateTime,
+  /** Stable, non-secret provider account identity, including the provider API realm. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  accountLabel: Schema.optional(TrimmedNonEmptyString),
+  plan: Schema.optional(TrimmedNonEmptyString),
+  status: Schema.optional(TrimmedNonEmptyString),
+  periodStart: Schema.optional(IsoDateTime),
+  periodEnd: Schema.optional(IsoDateTime),
+  requestCount: Schema.optional(NonNegativeInt),
+  tokens: Schema.optional(
+    Schema.Struct({
+      input: Schema.optional(NonNegativeInt),
+      output: Schema.optional(NonNegativeInt),
+      total: Schema.optional(NonNegativeInt),
+    }),
+  ),
+  costUsd: Schema.optional(NonNegativeNumber),
+  creditsUsed: Schema.optional(ServerProviderAccountUsageCredits),
+  creditsBalance: Schema.optional(ServerProviderAccountUsageCredits),
+  studioUsageUrl: Schema.optional(TrimmedNonEmptyString),
+  unavailable: Schema.optional(
+    Schema.Struct({
+      reason: Schema.Literals(["unsupported", "probeFailed"]),
+      message: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
+});
+export type ServerProviderAccountUsage = typeof ServerProviderAccountUsage.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -240,6 +280,8 @@ export const ServerProvider = Schema.Struct({
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   // Absent when the driver has no notion of subscription usage.
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  // Optional for back-compat: legacy providers and clients have no account-level totals.
+  accountUsage: Schema.optional(ServerProviderAccountUsage),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });

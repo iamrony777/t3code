@@ -206,6 +206,62 @@ describe("ServerProvider", () => {
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
+
+  it("decodes an optional structured provider account usage snapshot", () => {
+    const accountUsage = {
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      accountId: "https://api.commandcode.ai:org:org-123",
+      accountLabel: "Command Org",
+      plan: "Teams Pro",
+      status: "active",
+      periodStart: "2026-04-01T00:00:00.000Z",
+      periodEnd: "2026-05-01T00:00:00.000Z",
+      requestCount: 42,
+      tokens: { input: 100, output: 25, total: 125 },
+      costUsd: 3.5,
+      creditsUsed: { total: 3.5, free: 0.5, monthly: 2, purchased: 1 },
+      creditsBalance: { total: 12, free: 1, monthly: 8, purchased: 3 },
+      studioUsageUrl: "https://commandcode.ai/command-org/settings/usage",
+      unavailable: { reason: "probeFailed", message: "Some usage data could not be loaded." },
+    } as const;
+
+    const parsed = decodeServerProvider({ ...baseProviderSnapshot, accountUsage });
+
+    expect(parsed.accountUsage).toEqual(accountUsage);
+    expect(decodeServerProvider(baseProviderSnapshot).accountUsage).toBeUndefined();
+  });
+
+  it("rejects negative, non-finite, and fractional account usage counters", () => {
+    const invalidSnapshots = [
+      { requestCount: -1 },
+      { requestCount: 1.5 },
+      { costUsd: Number.POSITIVE_INFINITY },
+      { tokens: { total: -1 } },
+      { creditsUsed: { free: Number.NaN } },
+      { creditsBalance: { purchased: -0.01 } },
+    ];
+
+    for (const accountUsage of invalidSnapshots) {
+      expect(() =>
+        decodeServerProvider({
+          ...baseProviderSnapshot,
+          accountUsage: { checkedAt: "2026-04-10T00:00:00.000Z", ...accountUsage },
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("rejects an empty stable account identifier", () => {
+    expect(() =>
+      decodeServerProvider({
+        ...baseProviderSnapshot,
+        accountUsage: {
+          checkedAt: "2026-04-10T00:00:00.000Z",
+          accountId: "  ",
+        },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("ServerProviderGlobalOptionSetInput", () => {

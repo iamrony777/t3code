@@ -52,8 +52,9 @@ import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { ClaudeDriver } from "../Drivers/ClaudeDriver.ts";
-import { CodexDriver } from "../Drivers/CodexDriver.ts";
+import { ClaudeDriver, type ClaudeDriverEnv } from "../Drivers/ClaudeDriver.ts";
+import { ClaudeActiveUsageProbe } from "./ClaudeActiveUsageProbe.ts";
+import { CodexDriver, type CodexDriverEnv } from "../Drivers/CodexDriver.ts";
 import { CommandCodeDriver } from "../Drivers/CommandCodeDriver.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import { GrokDriver } from "../Drivers/GrokDriver.ts";
@@ -69,6 +70,13 @@ const TestHttpClientLive = Layer.succeed(
   HttpClient.make((request) =>
     Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
   ),
+);
+
+const TestClaudeActiveUsageProbeLayer = Layer.succeed(
+  ClaudeActiveUsageProbe,
+  ClaudeActiveUsageProbe.of({
+    probe: () => Effect.die("Active Claude usage probing is not expected in this test."),
+  }),
 );
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
@@ -244,6 +252,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(CodexResetCredit.layerTest),
+    Layer.provideMerge(TestClaudeActiveUsageProbeLayer),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -382,7 +391,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         },
       };
 
-      const { registry } = yield* makeProviderInstanceRegistry({
+      const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv | ClaudeDriverEnv>({
         drivers: [CodexDriver, ClaudeDriver],
         configMap,
       });
@@ -533,6 +542,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(CodexResetCredit.layerTest),
+    Layer.provideMerge(TestClaudeActiveUsageProbeLayer),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>
@@ -631,10 +641,13 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const commandCode = yield* registry.getInstance(commandCodeId);
       const openCode = yield* registry.getInstance(openCodeId);
       expect(codex?.driverKind).toBe(codexDriverKind);
+      expect(codex?.refreshUsageLimits).toBeDefined();
       expect(claude?.driverKind).toBe(claudeDriverKind);
+      expect(claude?.refreshUsageLimits).toBeDefined();
       expect(cursor?.driverKind).toBe(cursorDriverKind);
       expect(grok?.driverKind).toBe(grokDriverKind);
       expect(commandCode?.driverKind).toBe(commandCodeDriverKind);
+      expect(commandCode?.refreshUsageLimits).toBeDefined();
       expect(openCode?.driverKind).toBe(openCodeDriverKind);
       expect(codex?.displayName).toBe("Codex");
       expect(claude?.displayName).toBe("Claude");

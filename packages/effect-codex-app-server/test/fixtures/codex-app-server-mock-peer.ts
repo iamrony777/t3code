@@ -1,3 +1,4 @@
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 let nextServerRequestId = 10_000;
@@ -26,6 +27,15 @@ const sendRequest = (method: string, params: unknown) => {
   const id = nextServerRequestId++;
   writeMessage({ id, method, params });
   return id;
+};
+
+const readUsageFixture = () => {
+  const fixturePath = process.env.CODEX_APP_SERVER_TEST_USAGE_FILE;
+  if (!fixturePath) return { usedPercent: 12 };
+  return JSON.parse(NodeFS.readFileSync(fixturePath, "utf8")) as {
+    readonly failRateLimits?: boolean;
+    readonly usedPercent?: number;
+  };
 };
 
 const handleMethod = (message: Record<string, unknown>) => {
@@ -78,6 +88,42 @@ const handleMethod = (message: Record<string, unknown>) => {
           planType: "plus",
         },
         requiresOpenaiAuth: false,
+      });
+      return;
+    }
+    case "account/rateLimits/read": {
+      const usage = readUsageFixture();
+      if (usage.failRateLimits) {
+        respondError(message.id as number | string, -32603, "usage unavailable");
+        return;
+      }
+      respond(message.id as number | string, {
+        rateLimits: {
+          planType: "plus",
+          primary: {
+            usedPercent: usage.usedPercent ?? 12,
+            windowDurationMins: 300,
+          },
+        },
+        rateLimitResetCredits: null,
+      });
+      return;
+    }
+    case "model/list": {
+      respond(message.id as number | string, {
+        data: [
+          {
+            defaultReasoningEffort: "medium",
+            description: "Mock model",
+            displayName: "GPT Mock",
+            hidden: false,
+            id: "gpt-mock",
+            isDefault: true,
+            model: "gpt-mock",
+            supportedReasoningEfforts: [],
+          },
+        ],
+        nextCursor: null,
       });
       return;
     }

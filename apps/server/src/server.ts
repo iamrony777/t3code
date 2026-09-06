@@ -75,6 +75,7 @@ import * as MemorySourceIndexer from "./memory/MemorySourceIndexer.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
+import { ClaudeActiveUsageProbeLayer } from "./provider/Layers/ClaudeActiveUsageProbe.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
@@ -164,6 +165,10 @@ const PtyAdapterLive = Layer.unwrap(
       return NodePtyAdapter.layer;
     }
   }),
+);
+
+const ClaudeActiveUsageProbeLayerLive = ClaudeActiveUsageProbeLayer.pipe(
+  Layer.provide(PtyAdapterLive),
 );
 
 const ServerSettingsLayerLive = ServerSettings.layer.pipe(
@@ -489,7 +494,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // from the repo's `model-manifest.json` on `main` and applied by the
   // Codex/Claude drivers.
   Layer.provideMerge(
-    Layer.mergeAll(ProviderEventLoggers.layer, ModelManifest.layer, CodexResetCredit.layer),
+    Layer.mergeAll(
+      ProviderEventLoggers.layer,
+      ModelManifest.layer,
+      CodexResetCredit.layer,
+      ClaudeActiveUsageProbeLayerLive,
+    ),
   ),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but

@@ -149,15 +149,23 @@ export async function listTranscriptFiles(
  *
  * Used to tell "two servers reading the same transcript directory" apart from
  * "two machines whose hostname and home path happen to match". Returns an empty
- * string when the directory cannot be stat'd.
+ * string when the directory cannot be stat'd or its inode is not a usable
+ * filesystem identity.
  */
 export async function readDirectoryVolumeId(path: string): Promise<string> {
   try {
     const stats = await NodeFSP.stat(path);
-    return `${stats.dev}:${stats.ino}`;
+    return formatDirectoryVolumeId(stats);
   } catch {
     return "";
   }
+}
+
+export function formatDirectoryVolumeId(stats: {
+  readonly dev: number;
+  readonly ino: number;
+}): string {
+  return Number.isSafeInteger(stats.ino) && stats.ino > 0 ? `${stats.dev}:${stats.ino}` : "";
 }
 
 async function guardMatches(

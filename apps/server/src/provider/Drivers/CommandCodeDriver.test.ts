@@ -2,14 +2,16 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { CommandCodeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
@@ -60,14 +62,14 @@ const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPol
   shouldRunOpportunisticWork: Effect.succeed(true),
 });
 
-const DriverLayer = Layer.mergeAll(
+const DriverBaseLayer = Layer.mergeAll(
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-code-driver-" }).pipe(
     Layer.provide(NodeServices.layer),
   ),
   ServerSettingsModule.layerTest(),
-  StubHttpClientLive,
   BackgroundPolicyAlwaysRunLayer,
 ).pipe(Layer.provideMerge(NodeServices.layer));
+const DriverLayer = Layer.merge(DriverBaseLayer, StubHttpClientLive);
 
 /**
  * Fake `command-code` that only knows how to persist compact mode. Everything
@@ -186,5 +188,123 @@ describe("CommandCodeDriver.setGlobalOption", () => {
         expect(tasteLearning(after.globalOptions)).toMatchObject({ currentValue: true });
       }),
     ).pipe(Effect.provide(DriverLayer));
+  });
+});
+
+describe("CommandCodeDriver.refreshUsageLimits", () => {
+  it.effect("refreshes the account API once and keeps the last good account snapshot", () => {
+    let accountLabel = "Rony";
+    let used = 1;
+    let failUsage = false;
+    const usageRequests: string[] = [];
+    const accountApi = HttpClient.make((request) => {
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/alpha/")) usageRequests.push(url.pathname);
+      if (failUsage && url.pathname.startsWith("/alpha/")) {
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response("unavailable", { status: 503 })),
+        );
+      }
+      const body = url.pathname.endsWith("/whoami")
+        ? { user: { userName: accountLabel } }
+        : url.pathname.endsWith("/credits")
+          ? {
+              credits: { monthlyCredits: 8, purchasedCredits: 1, freeCredits: 1 },
+              windowLimits: { fiveHour: { used, cap: 4 } },
+            }
+          : url.pathname.endsWith("/subscriptions")
+            ? { data: { planId: "individual-pro", status: "active" } }
+            : url.pathname.endsWith("/summary")
+              ? { totalCount: 2, totalTokens: 50 }
+              : { data: [] };
+      return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body)));
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-usage-" });
+        const commandCodeDir = path.join(home, ".commandcode");
+        const executable = path.join(home, "command-code");
+        yield* fs.makeDirectory(commandCodeDir, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(commandCodeDir, "config.json"),
+          encodeSettingsDocument({ compactMode: "default", tasteLearning: true }),
+        );
+        yield* fs.writeFileString(
+          executable,
+          [
+            "#!/bin/sh",
+            'case " $* " in',
+            '  *" status "*) printf \'%s\\n\' \'{"authenticated":true,"version":"1.15.1","user":"cli-user","provider":"command-code"}\' ;;',
+            "  *\" --list-models \"*) printf '%s\\n' 'Anthropic' 'claude-sonnet-4-6  Claude Sonnet 4.6 (default)' ;;",
+            "  *) exit 7 ;;",
+            "esac",
+          ].join("\n"),
+        );
+        yield* fs.chmod(executable, 0o755);
+
+        let providerChecks = 0;
+        const initialCheckStarted = yield* Deferred.make<void>();
+        const recordingSpawner = ChildProcessSpawner.make((command) => {
+          if (ChildProcess.isStandardCommand(command) && command.args.includes("status")) {
+            providerChecks += 1;
+            return Deferred.succeed(initialCheckStarted, undefined).pipe(
+              Effect.andThen(baseSpawner.spawn(command)),
+            );
+          }
+          return baseSpawner.spawn(command);
+        });
+        const instance = yield* CommandCodeDriver.create({
+          instanceId: ProviderInstanceId.make("commandcode-usage"),
+          displayName: "Command Code usage",
+          enabled: true,
+          environment: [
+            { name: "HOME", value: home, sensitive: false },
+            { name: "COMMAND_CODE_API_KEY", value: "test-key", sensitive: true },
+          ],
+          config: decodeSettings({ binaryPath: executable }),
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recordingSpawner));
+        const refreshUsageLimits = instance.refreshUsageLimits;
+        if (!refreshUsageLimits) return yield* Effect.die("Command Code usage refresh is missing");
+
+        yield* Deferred.await(initialCheckStarted);
+        const first = yield* refreshUsageLimits();
+        expect(first.accountUsage?.accountLabel).toBe("Rony");
+        expect(first.usageLimits?.windows[0]?.usedPercent).toBe(25);
+
+        const baselineChecks = providerChecks;
+        const baselineRequests = usageRequests.length;
+        const firstCheckedAt = first.accountUsage?.checkedAt;
+        accountLabel = "Rony Work";
+        used = 2;
+        yield* TestClock.adjust("1 second");
+        const refreshed = yield* refreshUsageLimits();
+        expect(providerChecks - baselineChecks).toBe(1);
+        expect(usageRequests.slice(baselineRequests).toSorted()).toEqual(
+          [
+            "/alpha/whoami",
+            "/alpha/billing/credits",
+            "/alpha/billing/subscriptions",
+            "/alpha/usage/summary",
+          ].toSorted(),
+        );
+        expect(refreshed.accountUsage?.checkedAt).not.toBe(firstCheckedAt);
+        expect(refreshed.accountUsage?.accountLabel).toBe("Rony Work");
+        expect(refreshed.usageLimits?.windows[0]?.usedPercent).toBe(50);
+
+        failUsage = true;
+        yield* TestClock.adjust("1 second");
+        const failed = yield* refreshUsageLimits();
+        expect(failed.accountUsage).toEqual(refreshed.accountUsage);
+        expect(failed.usageLimits).toEqual(refreshed.usageLimits);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(DriverBaseLayer, Layer.succeed(HttpClient.HttpClient, accountApi)),
+      ),
+    );
   });
 });

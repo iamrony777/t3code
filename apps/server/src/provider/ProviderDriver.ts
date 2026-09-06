@@ -89,6 +89,12 @@ export interface ProviderInstance {
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
   /**
+   * Run a provider-owned, explicitly user-authorized limits refresh and return
+   * the snapshot it produced. Implementations may perform paid work, so only
+   * the Limits-view RPC path may call this capability.
+   */
+  readonly refreshUsageLimits?: () => Effect.Effect<ServerProvider, ProviderDriverError>;
+  /**
    * Redeem one banked rate-limit reset credit on the signed-in account, then
    * re-probe so the snapshot reflects the cleared windows. Account-level,
    * not thread-level, which is why it lives here rather than on the adapter.

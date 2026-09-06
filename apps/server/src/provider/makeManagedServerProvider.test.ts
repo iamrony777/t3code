@@ -596,6 +596,12 @@ describe("makeManagedServerProvider", () => {
           checkedAt: "2026-04-10T00:00:01.000Z",
           windows: [{ id: "primary", kind: "session", label: "Session", usedPercent: 10 }],
         } as const;
+        const probedAccountUsage = {
+          checkedAt: "2026-04-10T00:00:01.000Z",
+          accountLabel: "Rony",
+          plan: "Pro",
+          requestCount: 10,
+        } as const;
         const provider = yield* makeManagedServerProvider<TestSettings>({
           resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
@@ -605,12 +611,20 @@ describe("makeManagedServerProvider", () => {
           checkProvider: Ref.updateAndGet(refreshCount, (count) => count + 1).pipe(
             Effect.map((count) =>
               count === 1
-                ? { ...refreshedSnapshot, usageLimits: probedLimits }
+                ? {
+                    ...refreshedSnapshot,
+                    usageLimits: probedLimits,
+                    accountUsage: probedAccountUsage,
+                  }
                 : {
                     ...refreshedSnapshotSecond,
                     usageLimits: {
                       checkedAt: "2026-04-10T00:00:03.000Z",
                       windows: [],
+                      unavailable: { reason: "probeFailed" },
+                    },
+                    accountUsage: {
+                      checkedAt: "2026-04-10T00:00:03.000Z",
                       unavailable: { reason: "probeFailed" },
                     },
                   },
@@ -654,6 +668,217 @@ describe("makeManagedServerProvider", () => {
         const refreshed = yield* provider.refresh;
         assert.strictEqual(refreshed.message, refreshedSnapshotSecond.message);
         assert.deepStrictEqual(refreshed.usageLimits?.windows, [liveWindow]);
+        assert.deepStrictEqual(refreshed.accountUsage, probedAccountUsage);
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
+
+  it.effect("merges partial account usage fields without retaining data across accounts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refreshCount = yield* Ref.make(0);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(refreshCount, (count) => count + 1).pipe(
+            Effect.map((count) => {
+              if (count === 1) {
+                return {
+                  ...refreshedSnapshot,
+                  accountUsage: {
+                    checkedAt: "2026-04-10T00:00:01.000Z",
+                    accountLabel: "Rony",
+                    plan: "Pro",
+                    status: "active",
+                    requestCount: 10,
+                    tokens: { input: 80, output: 20, total: 100 },
+                    creditsBalance: { monthly: 8, purchased: 2, total: 10 },
+                  },
+                } satisfies ServerProvider;
+              }
+              if (count === 2) {
+                return {
+                  ...refreshedSnapshotSecond,
+                  accountUsage: {
+                    checkedAt: "2026-04-10T00:00:03.000Z",
+                    accountLabel: "Rony",
+                    requestCount: 12,
+                    tokens: { input: 90 },
+                    creditsBalance: { monthly: 7 },
+                    unavailable: {
+                      reason: "probeFailed",
+                      message: "Some Command Code usage data could not be loaded.",
+                    },
+                  },
+                } satisfies ServerProvider;
+              }
+              if (count === 3) {
+                return {
+                  ...refreshedSnapshotSecond,
+                  accountUsage: {
+                    checkedAt: "2026-04-10T00:00:04.000Z",
+                    accountLabel: "Another account",
+                    plan: "Teams Pro",
+                    requestCount: 1,
+                    creditsBalance: { monthly: 2, total: 2 },
+                    unavailable: {
+                      reason: "probeFailed",
+                      message: "Some Command Code usage data could not be loaded.",
+                    },
+                  },
+                } satisfies ServerProvider;
+              }
+              if (count === 4) {
+                return {
+                  ...refreshedSnapshotSecond,
+                  accountUsage: {
+                    checkedAt: "2026-04-10T00:00:05.000Z",
+                    accountLabel: "Another account",
+                    requestCount: 2,
+                  },
+                } satisfies ServerProvider;
+              }
+              return {
+                ...refreshedSnapshotSecond,
+                accountUsage: {
+                  checkedAt: "2026-04-10T00:00:06.000Z",
+                  unavailable: {
+                    reason: "unsupported",
+                    message: "Account usage is not supported.",
+                  },
+                },
+              } satisfies ServerProvider;
+            }),
+          ),
+          refreshInterval: "1 hour",
+        });
+        yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
+
+        const partial = yield* provider.refresh;
+        assert.deepStrictEqual(partial.accountUsage, {
+          checkedAt: "2026-04-10T00:00:03.000Z",
+          accountLabel: "Rony",
+          plan: "Pro",
+          status: "active",
+          requestCount: 12,
+          tokens: { input: 90 },
+          creditsBalance: { monthly: 7 },
+          unavailable: {
+            reason: "probeFailed",
+            message: "Some Command Code usage data could not be loaded.",
+          },
+        });
+
+        const switchedAccount = yield* provider.refresh;
+        assert.deepStrictEqual(switchedAccount.accountUsage, {
+          checkedAt: "2026-04-10T00:00:04.000Z",
+          accountLabel: "Another account",
+          plan: "Teams Pro",
+          requestCount: 1,
+          creditsBalance: { monthly: 2, total: 2 },
+          unavailable: {
+            reason: "probeFailed",
+            message: "Some Command Code usage data could not be loaded.",
+          },
+        });
+
+        const authoritative = yield* provider.refresh;
+        assert.deepStrictEqual(authoritative.accountUsage, {
+          checkedAt: "2026-04-10T00:00:05.000Z",
+          accountLabel: "Another account",
+          requestCount: 2,
+        });
+
+        const unsupported = yield* provider.refresh;
+        assert.deepStrictEqual(unsupported.accountUsage, {
+          checkedAt: "2026-04-10T00:00:06.000Z",
+          unavailable: {
+            reason: "unsupported",
+            message: "Account usage is not supported.",
+          },
+        });
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
+
+  it.effect("does not retain account usage across an ID switch with the same label", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refreshCount = yield* Ref.make(0);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(refreshCount, (count) => count + 1).pipe(
+            Effect.map((count) =>
+              count === 1
+                ? ({
+                    ...refreshedSnapshot,
+                    usageLimits: {
+                      checkedAt: "2026-04-10T00:00:01.000Z",
+                      windows: [{ id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 25 }],
+                    },
+                    accountUsage: {
+                      checkedAt: "2026-04-10T00:00:01.000Z",
+                      accountId: "https://api.commandcode.ai:user:user-a",
+                      accountLabel: "Rony",
+                      plan: "Pro",
+                      requestCount: 10,
+                      tokens: { total: 100 },
+                      creditsBalance: { monthly: 8, total: 8 },
+                    },
+                  } satisfies ServerProvider)
+                : ({
+                    ...refreshedSnapshotSecond,
+                    usageLimits: {
+                      checkedAt: "2026-04-10T00:00:03.000Z",
+                      windows: [],
+                      unavailable: {
+                        reason: "probeFailed",
+                        message: "Command Code usage limits could not be loaded.",
+                      },
+                    },
+                    accountUsage: {
+                      checkedAt: "2026-04-10T00:00:03.000Z",
+                      accountId: "https://api.commandcode.ai:user:user-b",
+                      accountLabel: "Rony",
+                      requestCount: 1,
+                      unavailable: {
+                        reason: "probeFailed",
+                        message: "Some Command Code usage data could not be loaded.",
+                      },
+                    },
+                  } satisfies ServerProvider),
+            ),
+          ),
+          refreshInterval: "1 hour",
+        });
+        yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
+
+        const switched = yield* provider.refresh;
+        assert.deepStrictEqual(switched.usageLimits, {
+          checkedAt: "2026-04-10T00:00:03.000Z",
+          windows: [],
+          unavailable: {
+            reason: "probeFailed",
+            message: "Command Code usage limits could not be loaded.",
+          },
+        });
+        assert.deepStrictEqual(switched.accountUsage, {
+          checkedAt: "2026-04-10T00:00:03.000Z",
+          accountId: "https://api.commandcode.ai:user:user-b",
+          accountLabel: "Rony",
+          requestCount: 1,
+          unavailable: {
+            reason: "probeFailed",
+            message: "Some Command Code usage data could not be loaded.",
+          },
+        });
       }),
     ).pipe(Effect.provide(AlwaysRunTestLayer)),
   );

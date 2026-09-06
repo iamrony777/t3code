@@ -1,9 +1,10 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { UsageSummary } from "./usage.ts";
+import { UsageSummary, UsageSummaryInput } from "./usage.ts";
 
 const decodeUsageSummary = Schema.decodeUnknownSync(UsageSummary);
+const decodeUsageSummaryInput = Schema.decodeUnknownSync(UsageSummaryInput);
 const encodeUsageSummary = Schema.encodeSync(UsageSummary);
 
 const bucket = (provider: string) => ({
@@ -90,5 +91,52 @@ describe("UsageSummary forward compatibility", () => {
     expect(parsed.contractVersion).toBe(3);
     expect(parsed.sinceDay).toBe("2026-08-01");
     expect(parsed.pricing.knownModels).toBe(1);
+  });
+
+  it("decodes commandcode buckets and source profiles", () => {
+    const parsed = decodeUsageSummary({
+      ...summary,
+      buckets: [{ ...bucket("commandcode"), sourceId: "commandcode-work" }],
+      sources: [
+        {
+          ...source("commandcode"),
+          sourceId: "commandcode-work",
+          profile: {
+            instanceId: "commandcode_work",
+            displayName: "Work",
+            accentColor: "#7c3aed",
+          },
+        },
+      ],
+    });
+
+    expect(parsed.buckets[0]?.provider).toBe("commandcode");
+    expect(parsed.buckets[0]?.sourceId).toBe("commandcode-work");
+    expect(parsed.sources[0]?.profile?.instanceId).toBe("commandcode_work");
+    expect(parsed.sources[0]?.profile?.displayName).toBe("Work");
+  });
+
+  it("keeps known supported providers while dropping future provider literals", () => {
+    const parsed = decodeUsageSummaryInput({
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-09",
+      timeZone: "UTC",
+      supportedProviders: ["claude", "someFutureProvider", "commandcode"],
+    });
+
+    expect(parsed.supportedProviders).toEqual(["claude", "commandcode"]);
+  });
+
+  it("keeps legacy summaries without source identity or profile metadata", () => {
+    const parsed = decodeUsageSummary({
+      ...summary,
+      contractVersion: 4,
+      buckets: [bucket("claude")],
+      sources: [source("claude")],
+    });
+
+    expect(parsed.buckets[0]?.sourceId).toBeUndefined();
+    expect(parsed.sources[0]?.sourceId).toBeUndefined();
+    expect(parsed.sources[0]?.profile).toBeUndefined();
   });
 });

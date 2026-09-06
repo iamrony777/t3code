@@ -3,6 +3,7 @@ import type {
   ProviderDriverKind,
   ModelCapabilities,
   ServerProvider,
+  ServerProviderAccountUsage,
   ServerProviderAuth,
   ServerProviderSkill,
   ServerProviderSlashCommand,
@@ -58,6 +59,7 @@ export interface ProviderProbeResult {
   readonly auth: ServerProviderAuth;
   readonly message?: string;
   readonly usageLimits?: ServerProviderUsageLimits;
+  readonly accountUsage?: ServerProviderAccountUsage;
 }
 
 export interface ServerProviderPresentation {
@@ -263,6 +265,7 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
+    ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
     ...(versionAdvisory ? { versionAdvisory } : {}),
   };
 }

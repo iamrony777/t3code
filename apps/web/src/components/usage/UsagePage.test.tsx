@@ -67,6 +67,8 @@ vi.mock("./usageProviders", async (importOriginal) => {
     PROVIDER_PRESENTATION: {
       codex: { color: "white", label: "Codex", mark: "span" },
       claude: { color: "orange", label: "Claude Code", mark: "span" },
+      commandcode: { color: "purple", label: "Command Code", mark: "span" },
+      grok: { color: "gray", label: "Grok Build", mark: "span" },
     },
   };
 });
@@ -203,5 +205,86 @@ describe("UsagePage model breakdown", () => {
       "token-heavy-model",
       "token-heavy-cheaper-model",
     ]);
+  });
+});
+
+describe("UsagePage profile breakdown", () => {
+  it("shows profile identity, totals, source diagnostics, and unpriced context", () => {
+    testState.useUsage.mockReturnValue({
+      ...testState.useUsage(),
+      merged: {
+        ...testState.useUsage().merged,
+        costQuality: {
+          ...testState.useUsage().merged.costQuality,
+          unpricedShare: 0.25,
+        },
+        profiles: [
+          {
+            environmentId: EnvironmentId.make("test-environment"),
+            sourceId: "claude-work",
+            provider: "claude",
+            instanceId: "claude-work",
+            label: "Work",
+            displayName: "Work",
+            accentColor: "#d97757",
+            status: "partial",
+            message: "2 transcript files could not be read.",
+            resolvedHomePath: "/profiles/work/.claude",
+            costUsd: 12.5,
+            totalTokens: 125_000,
+            records: 20,
+            sessions: 3,
+          },
+        ],
+      },
+    });
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+
+    expect(markup).toContain("Profiles");
+    expect(markup).toContain("Work");
+    expect(markup).toContain("125K tokens");
+    expect(markup).toContain("$12.50 API equivalent");
+    expect(markup).toContain("3 sessions");
+    expect(markup).toContain("Partial scan");
+    expect(markup).toContain("2 transcript files could not be read.");
+    expect(markup).toContain("/profiles/work/.claude");
+    expect(markup).toContain("unpriced and excluded from cost");
+  });
+
+  it("renders a missing profile's source diagnostic with zero usage", () => {
+    testState.useUsage.mockReturnValue({
+      ...testState.useUsage(),
+      merged: {
+        ...testState.useUsage().merged,
+        profiles: [
+          {
+            environmentId: EnvironmentId.make("test-environment"),
+            sourceId: "claude-missing",
+            provider: "claude",
+            instanceId: "claude-missing",
+            label: "Missing profile",
+            displayName: "Missing profile",
+            accentColor: undefined,
+            status: "missing",
+            message: "Profile directory does not exist.",
+            resolvedHomePath: "/profiles/missing/.claude",
+            costUsd: 0,
+            totalTokens: 0,
+            records: 0,
+            sessions: 0,
+          },
+        ],
+      },
+    });
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+
+    expect(markup).toContain("Missing profile");
+    expect(markup).toContain("Source missing");
+    expect(markup).toContain("Profile directory does not exist.");
+    expect(markup).toContain("/profiles/missing/.claude");
+    expect(markup).toContain("0 tokens");
+    expect(markup).toContain("0 sessions");
   });
 });

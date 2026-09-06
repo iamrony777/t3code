@@ -9,9 +9,13 @@
 import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
+  type ProviderInstanceId,
   type UsageBucket,
   type UsageProviderKind,
+  type UsageSource,
   type UsageSourceFingerprint,
+  type UsageSourceId,
+  type UsageSourceStatus,
   type UsageSummary,
 } from "@t3tools/contracts";
 
@@ -62,6 +66,23 @@ export interface CostQuality {
   readonly cacheSavingsUsd: number;
 }
 
+export interface ProfileTotals {
+  readonly environmentId: EnvironmentId;
+  readonly sourceId: UsageSourceId;
+  readonly provider: UsageProviderKind;
+  readonly instanceId: ProviderInstanceId | undefined;
+  readonly label: string;
+  readonly displayName: string | undefined;
+  readonly accentColor: string | undefined;
+  readonly status: UsageSourceStatus;
+  readonly message: string | null;
+  readonly resolvedHomePath: string;
+  readonly costUsd: number;
+  readonly totalTokens: number;
+  readonly records: number;
+  readonly sessions: number;
+}
+
 export interface MergedUsage {
   readonly costUsd: number;
   readonly uncachedInputTokens: number;
@@ -73,11 +94,12 @@ export interface MergedUsage {
   readonly records: number;
   readonly sessions: number;
   readonly providers: readonly ProviderTotals[];
+  readonly profiles: readonly ProfileTotals[];
   readonly models: readonly ModelTotals[];
   readonly daily: readonly DailyTotals[];
   readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
-  /** Environments whose data was dropped as a duplicate of another's. */
+  /** Physical sources whose data was dropped as a duplicate of another's. */
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly staleEnvironments: readonly EnvironmentId[];
@@ -105,15 +127,21 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
  *
  * Several environments on one machine (worktree servers, for instance) resolve
  * the same provider home and would otherwise double count every token. The
- * first environment in a stable order claims a fingerprint; the rest have that
- * provider's buckets dropped. Environments are sorted by id so the winner does
- * not change between renders.
+ * first environment in a stable order claims a fingerprint; the rest have only
+ * that source's attributed buckets dropped. Environments are sorted by id so
+ * the winner does not change between renders.
  */
 function claimSources(environments: readonly EnvironmentUsage[]): {
-  readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
+  readonly claimByFingerprint: ReadonlyMap<
+    string,
+    { readonly environmentId: EnvironmentId; readonly source: UsageSource }
+  >;
   readonly duplicates: readonly string[];
 } {
-  const ownerByFingerprint = new Map<string, EnvironmentId>();
+  const claimByFingerprint = new Map<
+    string,
+    { readonly environmentId: EnvironmentId; readonly source: UsageSource }
+  >();
   const duplicates: string[] = [];
 
   const ordered = [...environments].sort((a, b) => a.environmentId.localeCompare(b.environmentId));
@@ -122,33 +150,47 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
     for (const source of environment.summary.sources) {
       if (source.status === "missing") continue;
       const key = fingerprintKey(source.fingerprint);
-      if (ownerByFingerprint.has(key)) {
+      if (claimByFingerprint.has(key)) {
         duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
         continue;
       }
-      ownerByFingerprint.set(key, environment.environmentId);
+      claimByFingerprint.set(key, { environmentId: environment.environmentId, source });
     }
   }
 
-  return { ownerByFingerprint, duplicates };
+  return { claimByFingerprint, duplicates };
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,
-  ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
+  claimByFingerprint: ReadonlyMap<
+    string,
+    { readonly environmentId: EnvironmentId; readonly source: UsageSource }
+  >,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
+  readonly sources: readonly UsageSource[];
 } {
   const ownedProviders = new Set<UsageProviderKind>();
+  const ownedSourceIds = new Set<UsageSourceId>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
+  const sources: UsageSource[] = [];
   for (const source of environment.summary.sources) {
-    if (source.status === "missing") continue;
+    if (source.status === "missing") {
+      // Missing configured profiles still need a presentation row, but they
+      // own no transcripts, buckets, or sessions and never enter dedup claims.
+      sources.push(source);
+      continue;
+    }
     const key = fingerprintKey(source.fingerprint);
-    if (ownerByFingerprint.get(key) === environment.environmentId) {
+    const claim = claimByFingerprint.get(key);
+    if (claim?.environmentId === environment.environmentId && claim.source === source) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
+      if (source.sourceId !== undefined) ownedSourceIds.add(source.sourceId);
+      sources.push(source);
       // Distinct within a directory. Summing per-bucket session counts instead
       // would count a session once per day and model it spans.
       sessionsByProvider.set(
@@ -158,8 +200,13 @@ function ownedContribution(
     }
   }
   return {
-    buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    buckets: environment.summary.buckets.filter((bucket) =>
+      bucket.sourceId === undefined
+        ? ownedProviders.has(bucket.provider)
+        : ownedSourceIds.has(bucket.sourceId),
+    ),
     sessionsByProvider,
+    sources,
   };
 }
 
@@ -188,6 +235,7 @@ const EMPTY_MERGED: MergedUsage = {
   records: 0,
   sessions: 0,
   providers: [],
+  profiles: [],
   models: [],
   daily: [],
   hourly: [],
@@ -229,7 +277,7 @@ export function mergeUsage(
     }
   }
 
-  const { ownerByFingerprint, duplicates } = claimSources(current);
+  const { claimByFingerprint, duplicates } = claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -246,6 +294,25 @@ export function mergeUsage(
   const providerAccumulator = new Map<
     UsageProviderKind,
     { costUsd: number; totalTokens: number; records: number; sessions: number }
+  >();
+  const profileAccumulator = new Map<
+    string,
+    {
+      environmentId: EnvironmentId;
+      sourceId: UsageSourceId;
+      provider: UsageProviderKind;
+      instanceId: ProviderInstanceId | undefined;
+      label: string;
+      displayName: string | undefined;
+      accentColor: string | undefined;
+      status: UsageSourceStatus;
+      message: string | null;
+      resolvedHomePath: string;
+      costUsd: number;
+      totalTokens: number;
+      records: number;
+      sessions: number;
+    }
   >();
   const modelAccumulator = new Map<
     string,
@@ -272,8 +339,32 @@ export function mergeUsage(
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(environment, ownerByFingerprint);
+    const { buckets, sessionsByProvider, sources } = ownedContribution(
+      environment,
+      claimByFingerprint,
+    );
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
+
+    for (const source of sources) {
+      if (source.sourceId === undefined) continue;
+      const profileKey = JSON.stringify([environment.environmentId, source.sourceId]);
+      profileAccumulator.set(profileKey, {
+        environmentId: environment.environmentId,
+        sourceId: source.sourceId,
+        provider: source.fingerprint.provider,
+        instanceId: source.profile?.instanceId,
+        label: source.profile?.displayName ?? String(source.profile?.instanceId ?? source.sourceId),
+        displayName: source.profile?.displayName,
+        accentColor: source.profile?.accentColor,
+        status: source.status,
+        message: source.message,
+        resolvedHomePath: source.fingerprint.resolvedHomePath,
+        costUsd: 0,
+        totalTokens: 0,
+        records: 0,
+        sessions: source.status === "missing" ? 0 : source.distinctSessions,
+      });
+    }
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
       sessions += providerSessions;
@@ -312,6 +403,16 @@ export function mergeUsage(
       provider.totalTokens += tokens;
       provider.records += bucket.records;
       providerAccumulator.set(bucket.provider, provider);
+
+      if (bucket.sourceId !== undefined) {
+        const profileKey = JSON.stringify([environment.environmentId, bucket.sourceId]);
+        const profile = profileAccumulator.get(profileKey);
+        if (profile !== undefined) {
+          profile.costUsd += bucket.costUsd;
+          profile.totalTokens += tokens;
+          profile.records += bucket.records;
+        }
+      }
 
       const modelKey = `${bucket.provider} ${bucket.model}`;
       const model = modelAccumulator.get(modelKey) ?? {
@@ -374,6 +475,14 @@ export function mergeUsage(
     }))
     .sort((a, b) => b.costUsd - a.costUsd);
 
+  const profiles: ProfileTotals[] = [...profileAccumulator.values()].sort(
+    (a, b) =>
+      b.costUsd - a.costUsd ||
+      b.totalTokens - a.totalTokens ||
+      a.label.localeCompare(b.label) ||
+      a.environmentId.localeCompare(b.environmentId),
+  );
+
   const models: ModelTotals[] = [...modelAccumulator.entries()]
     .map(([key, totals]) => ({
       model: key.slice(key.indexOf(" ") + 1),
@@ -409,6 +518,7 @@ export function mergeUsage(
     records,
     sessions,
     providers,
+    profiles,
     models,
     daily,
     hourly,

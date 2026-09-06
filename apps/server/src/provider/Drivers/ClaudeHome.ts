@@ -34,6 +34,26 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   };
 });
 
+export const resolveClaudeConfigDirectoryPath = Effect.fn("resolveClaudeConfigDirectoryPath")(
+  function* (
+    config: Pick<ClaudeSettings, "homePath">,
+    baseEnv: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<string, never, Path.Path> {
+    const path = yield* Path.Path;
+    const environment = yield* makeClaudeEnvironment(config, baseEnv);
+    const explicitConfigDirectory = environment.CLAUDE_CONFIG_DIR?.trim();
+    if (explicitConfigDirectory) {
+      return path.resolve(expandHomePath(explicitConfigDirectory));
+    }
+
+    const environmentHome = environment.HOME?.trim() || environment.USERPROFILE?.trim();
+    const homePath = environmentHome
+      ? path.resolve(expandHomePath(environmentHome))
+      : yield* resolveClaudeHomePath(config);
+    return path.join(homePath, ".claude");
+  },
+);
+
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
   function* (config: Pick<ClaudeSettings, "homePath">): Effect.fn.Return<string, never, Path.Path> {
     const resolvedHomePath = yield* resolveClaudeHomePath(config);

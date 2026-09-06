@@ -5454,6 +5454,158 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes explicit usage-limit refreshes to the targeted provider instance only", () =>
+    Effect.gen(function* () {
+      const targetId = ProviderInstanceId.make("claude_work");
+      const otherId = ProviderInstanceId.make("claude_personal");
+      let targetRefreshes = 0;
+      let otherRefreshes = 0;
+      let passiveRefreshes = 0;
+      const refreshedProvider = {
+        instanceId: targetId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        enabled: true,
+        installed: true,
+        version: "1.0.0",
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2027-01-15T08:00:00.000Z",
+        models: [],
+        globalOptions: [],
+        slashCommands: [],
+        skills: [],
+        usageLimits: {
+          checkedAt: "2027-01-15T08:00:00.000Z",
+          windows: [],
+        },
+      } satisfies ServerProvider;
+      const target = {
+        instanceId: targetId,
+        refreshUsageLimits: () =>
+          Effect.sync(() => {
+            targetRefreshes += 1;
+            return refreshedProvider;
+          }),
+      } as unknown as ProviderInstance;
+      const other = {
+        instanceId: otherId,
+        refreshUsageLimits: () =>
+          Effect.sync(() => {
+            otherRefreshes += 1;
+            return refreshedProvider;
+          }),
+      } as unknown as ProviderInstance;
+      const applied: ServerProvider[] = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerInstanceRegistry: {
+            listInstances: Effect.succeed([target, other]),
+          },
+          providerRegistry: {
+            getProviders: Effect.succeed([refreshedProvider]),
+            refreshInstance: () =>
+              Effect.sync(() => {
+                passiveRefreshes += 1;
+                return [refreshedProvider];
+              }),
+            applyInstanceSnapshot: (_instanceId, snapshot) =>
+              Effect.sync(() => {
+                applied.push(snapshot);
+                return [snapshot];
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            yield* client[WS_METHODS.serverRefreshProviders]({ instanceId: targetId });
+            assert.strictEqual(targetRefreshes, 0);
+            assert.strictEqual(passiveRefreshes, 1);
+            passiveRefreshes = 0;
+            yield* client[WS_METHODS.serverRefreshProviders]({
+              instanceId: targetId,
+              refreshUsageLimits: true,
+            });
+          }),
+        ),
+      );
+
+      assert.strictEqual(targetRefreshes, 1);
+      assert.strictEqual(otherRefreshes, 0);
+      assert.strictEqual(passiveRefreshes, 0);
+      assert.deepEqual(applied, [refreshedProvider]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("refreshes active usage instances concurrently without a duplicate passive probe", () =>
+    Effect.gen(function* () {
+      const firstId = ProviderInstanceId.make("claude_work");
+      const secondId = ProviderInstanceId.make("claude_personal");
+      const active = yield* Ref.make(0);
+      const maxActive = yield* Ref.make(0);
+      let passiveRefreshes = 0;
+      const makeProvider = (instanceId: ProviderInstanceId) =>
+        ({
+          instanceId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: true,
+          installed: true,
+          version: "1.0.0",
+          status: "ready" as const,
+          auth: { status: "authenticated" as const },
+          checkedAt: "2027-01-15T08:00:00.000Z",
+          models: [],
+          globalOptions: [],
+          slashCommands: [],
+          skills: [],
+        }) satisfies ServerProvider;
+      const providers = [makeProvider(firstId), makeProvider(secondId)];
+      const makeInstance = (snapshot: ServerProvider) =>
+        ({
+          instanceId: snapshot.instanceId,
+          refreshUsageLimits: () =>
+            Effect.acquireUseRelease(
+              Ref.updateAndGet(active, (count) => count + 1).pipe(
+                Effect.tap((count) => Ref.update(maxActive, (maximum) => Math.max(maximum, count))),
+              ),
+              () => Effect.yieldNow.pipe(Effect.andThen(Effect.succeed(snapshot))),
+              () => Ref.update(active, (count) => count - 1),
+            ),
+        }) as unknown as ProviderInstance;
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerInstanceRegistry: {
+            listInstances: Effect.succeed(providers.map(makeInstance)),
+          },
+          providerRegistry: {
+            getProviders: Effect.succeed(providers),
+            refresh: () =>
+              Effect.sync(() => {
+                passiveRefreshes += 1;
+                return providers;
+              }),
+            applyInstanceSnapshot: (_instanceId, snapshot) => Effect.succeed([snapshot]),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverRefreshProviders]({ refreshUsageLimits: true }),
+        ),
+      );
+
+      assert.strictEqual(passiveRefreshes, 0);
+      assert.strictEqual(yield* Ref.get(maxActive), 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("merges a driver-supplied snapshot instead of re-probing the provider", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("commandcode");

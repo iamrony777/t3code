@@ -1,4 +1,4 @@
-import type { EnvironmentId, UsageSummaryInput } from "@t3tools/contracts";
+import { UsageProviderKind, type EnvironmentId, type UsageSummaryInput } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type { AtomRegistry } from "effect/unstable/reactivity";
 
@@ -8,6 +8,11 @@ import { executeAtomQuery, runAtomCommand, squashAtomCommandFailure } from "./ru
 import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
+
+/** Attach the provider literals this client can decode to a usage request. */
+export function withSupportedUsageProviders(input: UsageSummaryInput): UsageSummaryInput {
+  return { ...input, supportedProviders: [...UsageProviderKind.literals] };
+}
 
 /** Refresh pricing, then await each selected environment's rescan while it remains connected. */
 export async function refreshUsage({

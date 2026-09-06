@@ -193,6 +193,7 @@ export function UsageRouteScreen() {
                   timeZone={window.timeZone}
                 />
                 <ProviderSection merged={merged} metric={metric} />
+                <ProfilesSection merged={merged} />
                 <TotalsSection merged={merged} isPast24Hours={isPast24Hours} />
                 <ModelsSection merged={merged} />
               </>
@@ -382,6 +383,67 @@ function ProviderSection(props: {
           </View>
         );
       })}
+    </SettingsSection>
+  );
+}
+
+const PROFILE_STATUS_LABEL = {
+  ok: "Ready",
+  missing: "Source missing",
+  partial: "Partial scan",
+  failed: "Scan failed",
+} as const;
+
+function ProfilesSection(props: { readonly merged: MergedUsage }) {
+  const colors = useProviderColors();
+  if (props.merged.profiles.length === 0) return null;
+
+  return (
+    <SettingsSection title="Profiles" card>
+      {props.merged.costQuality.unpricedShare > 0 ? (
+        <Text className="px-4 pt-4 text-xs text-foreground-muted">
+          Some historical records are unpriced and excluded from cost.
+        </Text>
+      ) : null}
+      {props.merged.profiles.map((profile, index) => (
+        <View
+          key={`${profile.environmentId}:${profile.sourceId}`}
+          className={index === 0 ? "gap-2 p-4" : "gap-2 border-t border-border-subtle p-4"}
+        >
+          <View className="flex-row items-center gap-2">
+            <View
+              className="size-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: profile.accentColor ?? colors[profile.provider] }}
+            />
+            <Text
+              className="min-w-0 flex-1 text-base font-t3-medium text-foreground"
+              numberOfLines={1}
+            >
+              {profile.displayName ?? profile.label}
+            </Text>
+            <Text className="shrink-0 text-xs text-foreground-tertiary">
+              {PROFILE_STATUS_LABEL[profile.status]}
+            </Text>
+          </View>
+          <View className="flex-row flex-wrap gap-x-3 gap-y-1">
+            <Text className="text-sm tabular-nums text-foreground-muted">
+              {formatTokens(profile.totalTokens)} tokens
+            </Text>
+            <Text className="text-sm tabular-nums text-foreground-muted">
+              {formatUsd(profile.costUsd)} API equivalent
+            </Text>
+            <Text className="text-sm tabular-nums text-foreground-muted">
+              {formatCount(profile.sessions)} {profile.sessions === 1 ? "session" : "sessions"}
+            </Text>
+          </View>
+          {profile.message ? (
+            <Text className="text-sm text-warning-foreground">{profile.message}</Text>
+          ) : null}
+          <Text className="font-mono text-xs text-foreground-tertiary" numberOfLines={1}>
+            {profile.resolvedHomePath}
+          </Text>
+        </View>
+      ))}
     </SettingsSection>
   );
 }

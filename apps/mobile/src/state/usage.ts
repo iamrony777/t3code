@@ -16,7 +16,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { refreshUsage } from "@t3tools/client-runtime/state/usage";
+import { refreshUsage, withSupportedUsageProviders } from "@t3tools/client-runtime/state/usage";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -78,14 +78,16 @@ export interface UsageView {
 export function useUsage(input: UsageSummaryInput): UsageView {
   const windowKey = useMemo(
     () =>
-      JSON.stringify({
-        sinceDay: input.sinceDay,
-        untilDay: input.untilDay,
-        timeZone: input.timeZone,
-        resolution: input.resolution,
-        sinceTime: input.sinceTime,
-        untilTime: input.untilTime,
-      }),
+      JSON.stringify(
+        withSupportedUsageProviders({
+          sinceDay: input.sinceDay,
+          untilDay: input.untilDay,
+          timeZone: input.timeZone,
+          resolution: input.resolution,
+          sinceTime: input.sinceTime,
+          untilTime: input.untilTime,
+        }),
+      ),
     [
       input.sinceDay,
       input.untilDay,
@@ -105,7 +107,9 @@ export function useUsage(input: UsageSummaryInput): UsageView {
         server: serverEnvironment,
         presentations: environmentPresentations,
         environmentIds: environments.map(({ environmentId }) => environmentId),
-        input: nextInput ?? (JSON.parse(windowKey) as UsageSummaryInput),
+        input: withSupportedUsageProviders(
+          nextInput ?? (JSON.parse(windowKey) as UsageSummaryInput),
+        ),
       }),
     [environments, windowKey],
   );

@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import {
   WS_METHODS,
+  WsServerRefreshProvidersRpc,
   WsServerSetProviderGlobalOptionRpc,
   WsSubscribeServerConfigRpc,
 } from "./rpc.ts";
@@ -50,6 +51,17 @@ describe("WsServerSetProviderGlobalOptionRpc", () => {
       instanceId: "commandcode",
       optionId: "account",
       message: "Failed to update account.",
+    });
+  });
+});
+
+describe("WsServerRefreshProvidersRpc", () => {
+  it("accepts an explicit manual usage-limits refresh flag while keeping it optional", () => {
+    const decode = Schema.decodeUnknownSync(WsServerRefreshProvidersRpc.payloadSchema);
+    expect(decode({})).toEqual({});
+    expect(decode({ instanceId: "claudeAgent", refreshUsageLimits: true })).toEqual({
+      instanceId: "claudeAgent",
+      refreshUsageLimits: true,
     });
   });
 });

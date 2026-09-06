@@ -1784,14 +1784,20 @@ const makeWsRpcLayer = (
               if (input.instanceId === undefined) {
                 yield* usageLimitSources.refresh;
               }
-              let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
-                ? providerRegistry.refreshWorkspaceSnapshot({
-                    instanceId: input.instanceId,
-                    cwd: input.cwd,
-                  })
-                : input.instanceId !== undefined
-                  ? providerRegistry.refreshInstance(input.instanceId)
-                  : providerRegistry.refresh();
+              const isLimitsOnlyRefresh =
+                input.refreshUsageLimits === true &&
+                input.refreshModels !== true &&
+                input.cwd === undefined;
+              let providers = yield* isLimitsOnlyRefresh
+                ? providerRegistry.getProviders
+                : input.cwd !== undefined && input.instanceId !== undefined
+                  ? providerRegistry.refreshWorkspaceSnapshot({
+                      instanceId: input.instanceId,
+                      cwd: input.cwd,
+                    })
+                  : input.instanceId !== undefined
+                    ? providerRegistry.refreshInstance(input.instanceId)
+                    : providerRegistry.refresh();
               if (input.refreshModels) {
                 const instances = yield* providerInstances.listInstances;
                 for (const instance of instances) {
@@ -1817,6 +1823,48 @@ const makeWsRpcLayer = (
                     ),
                   );
                   providers = yield* providerRegistry.refreshInstance(instance.instanceId);
+                }
+              }
+              if (input.refreshUsageLimits) {
+                const instances = yield* providerInstances.listInstances;
+                const refreshed = yield* Effect.forEach(
+                  instances,
+                  (instance) => {
+                    if (
+                      !instance.refreshUsageLimits ||
+                      (input.instanceId !== undefined &&
+                        input.instanceId !== instance.instanceId) ||
+                      !providers.some(
+                        (provider) =>
+                          provider.instanceId === instance.instanceId &&
+                          provider.enabled &&
+                          provider.installed,
+                      )
+                    ) {
+                      return Effect.succeed(Option.none());
+                    }
+                    return instance.refreshUsageLimits().pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new ProviderSetupError({
+                            instanceId: instance.instanceId,
+                            operation: "refresh-usage-limits",
+                            detail: error.detail,
+                          }),
+                      ),
+                      Effect.map((snapshot) =>
+                        Option.some({ instanceId: instance.instanceId, snapshot }),
+                      ),
+                    );
+                  },
+                  { concurrency: "unbounded" },
+                );
+                for (const result of refreshed) {
+                  if (Option.isNone(result)) continue;
+                  providers = yield* providerRegistry.applyInstanceSnapshot(
+                    result.value.instanceId,
+                    result.value.snapshot,
+                  );
                 }
               }
               return { providers };

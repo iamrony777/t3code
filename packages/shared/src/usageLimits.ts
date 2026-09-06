@@ -48,6 +48,65 @@ export interface LimitsGroup {
   readonly providers: readonly ServerProvider[];
 }
 
+export interface ProviderAccountUsageSnapshot {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly provider: ServerProvider & {
+    readonly accountUsage: NonNullable<ServerProvider["accountUsage"]>;
+  };
+}
+
+export function accountUsageCreditSummary(
+  credits: NonNullable<ServerProvider["accountUsage"]>["creditsUsed"],
+  format: (value: number) => string,
+): string | null {
+  if (!credits) return null;
+  const parts = [
+    credits.total === undefined ? null : `${format(credits.total)} total`,
+    credits.free === undefined ? null : `${format(credits.free)} free`,
+    credits.monthly === undefined ? null : `${format(credits.monthly)} monthly`,
+    credits.purchased === undefined ? null : `${format(credits.purchased)} purchased`,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export function accountUsageUnavailableMessage(
+  unavailable: NonNullable<ServerProvider["accountUsage"]>["unavailable"],
+): string | null {
+  if (!unavailable) return null;
+  return (
+    unavailable.message ??
+    (unavailable.reason === "unsupported"
+      ? "Account usage is not available for this account."
+      : "Could not refresh account usage.")
+  );
+}
+
+/** Provider account totals are independent of subscription-window support. */
+export function collectProviderAccountUsage(
+  presentations: Parameters<typeof collectLimitsGroups>[0],
+): readonly ProviderAccountUsageSnapshot[] {
+  const snapshots: ProviderAccountUsageSnapshot[] = [];
+  for (const [environmentId, presentation] of presentations) {
+    for (const provider of presentation.serverConfig?.providers ?? []) {
+      if (
+        !provider.enabled ||
+        !provider.installed ||
+        !isProviderAvailable(provider) ||
+        provider.accountUsage === undefined
+      ) {
+        continue;
+      }
+      snapshots.push({
+        environmentId,
+        environmentLabel: presentation.entry.target.label,
+        provider: { ...provider, accountUsage: provider.accountUsage },
+      });
+    }
+  }
+  return snapshots;
+}
+
 /**
  * One group per connected environment with a provider reporting limits.
  * Provider snapshots come from the config stream every client already holds,
@@ -149,11 +208,16 @@ function accountKey(driver: ServerProvider["driver"], email: string | undefined)
   return normalizedEmail ? `${driver}:${normalizedEmail}` : null;
 }
 
+function providerStableAccountKey(provider: ServerProvider): string | null {
+  const accountId = provider.accountUsage?.accountId?.trim();
+  return accountId ? `${provider.driver}:account:${accountId}` : null;
+}
+
 /**
  * One subscription account as the pooled views see it, whichever way it was
- * reported. The same email signed in natively on two environments, or reported
- * by a hub as well as natively, is one account: its quota is one bucket, so
- * counting it twice would misstate what is left.
+ * reported. Native providers prefer their non-secret stable account ID and
+ * fall back to email; hub accounts use email when available. One subscription
+ * quota is one bucket, so counting it twice would misstate what is left.
  */
 export interface LimitAccount {
   readonly key: string;
@@ -161,6 +225,7 @@ export interface LimitAccount {
   /** The instance's configured name, which is not sensitive; null for hub accounts. */
   readonly displayName: string | null;
   readonly email: string | undefined;
+  readonly accountLabel: string | undefined;
   readonly plan: string | undefined;
   readonly accentColor: string | undefined;
   /** Environments the account is signed in on; empty when only a hub reports it. */
@@ -203,6 +268,7 @@ export function collectLimitAccounts(
       ),
     ];
     const winner = fresher ? next : previous;
+    const other = fresher ? previous : next;
     // Windows come from the freshest snapshot, wherever it was read. Reset
     // credits only ever come from a native instance, and the redeem must go
     // to the instance whose credits are on show, so the two travel together:
@@ -213,7 +279,8 @@ export function collectLimitAccounts(
     accounts.set(key, {
       ...previous,
       displayName: previous.displayName ?? next.displayName,
-      plan: previous.plan ?? next.plan,
+      accountLabel: winner.accountLabel ?? other.accountLabel,
+      plan: winner.plan ?? other.plan,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       // A hub only names the account when no environment has it natively.
@@ -231,15 +298,18 @@ export function collectLimitAccounts(
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      const stableKey = providerStableAccountKey(provider);
       merge(
-        accountKey(provider.driver, provider.auth.email) ??
+        stableKey ??
+          accountKey(provider.driver, provider.auth.email) ??
           `${environmentId}:${provider.instanceId}`,
         {
-          key: `${environmentId}:${provider.instanceId}`,
+          key: stableKey ?? `${environmentId}:${provider.instanceId}`,
           driver: provider.driver,
           displayName: provider.displayName?.trim() || null,
           email: provider.auth.email,
-          plan: provider.auth.label,
+          accountLabel: provider.accountUsage?.accountLabel,
+          plan: provider.accountUsage ? provider.accountUsage.plan : provider.auth.label,
           accentColor: provider.accentColor,
           environments: [{ environmentId, label }],
           sourceLabel: null,
@@ -265,6 +335,7 @@ export function collectLimitAccounts(
           driver: account.driver,
           displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
           email: account.email,
+          accountLabel: undefined,
           plan: account.plan,
           accentColor: undefined,
           environments: [],
@@ -280,9 +351,8 @@ export function collectLimitAccounts(
 
 /**
  * What the pooled views cannot draw as a bar: a hub that failed to read, a
- * provider whose probe failed. Accounts that can never report (API keys)
- * are left out; there is nothing for the user to act on. The environment
- * is named only when more than one is connected.
+ * provider whose probe failed, or an account without subscription limits.
+ * The environment is named only when more than one is connected.
  */
 export function collectLimitNotices(
   presentations: Parameters<typeof collectLimitSources>[0],
@@ -293,9 +363,6 @@ export function collectLimitNotices(
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      // An account that can never report (API key) is left out; one that
-      // failed, or reported nothing at all, is worth a line.
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
       const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
       if (notice) notices.push(`${label(environmentLabel, name)}: ${notice}`);
@@ -624,11 +691,12 @@ export function collectProviderUsageLimits(
   const notices: string[] = [];
   for (const provider of native) {
     if (!provider.usageLimits) continue;
+    const plan = provider.accountUsage ? provider.accountUsage.plan : provider.auth.label;
     accounts.push({
       id: provider.instanceId,
       driver: provider.driver,
       label: `${providerLimitsLabel(provider, () => undefined)} [${provider.instanceId}]`,
-      ...(provider.auth.label ? { plan: provider.auth.label } : {}),
+      ...(plan ? { plan } : {}),
       instanceId: provider.instanceId,
       ...(provider.displayName ? { displayName: provider.displayName } : {}),
       ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),

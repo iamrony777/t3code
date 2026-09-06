@@ -7,19 +7,21 @@
  * orchestration projections, so usage stays complete even for turns that were
  * never driven through T3 Code. This mirrors the approach `ccusage` takes.
  *
- * Environments return pre-aggregated `(day, hourStart?, provider, model)`
- * buckets. Raw transcript records never cross the wire.
+ * Environments return pre-aggregated
+ * `(day, hourStart?, provider, sourceId?, model)` buckets. Raw transcript
+ * records never cross the wire.
  *
  * @module usage
  */
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
- * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
- * client renders partial coverage when an environment reports an older version
- * rather than failing the whole page.
+ * Bumped whenever usage summary behavior or attribution changes. The client
+ * renders partial coverage when an environment reports an incompatible older
+ * version rather than failing the whole page.
  *
  * Adding a provider to {@link UsageProviderKind} is not such a change. The
  * check only fires when the *environment* is older than the client, and an
@@ -30,19 +32,32 @@ import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from ".
  * either: {@link UsageSummary} drops the individual buckets and sources whose
  * provider the client cannot decode and keeps the rest.
  */
-export const USAGE_CONTRACT_VERSION = 5 as const;
+export const USAGE_CONTRACT_VERSION = 6 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * v5 only adds `grok` to {@link UsageProviderKind}; v4 Claude/Codex buckets
- * remain valid, so mixed-version environments keep those totals instead of
- * treating every older server as stale.
+ * v5 only added `grok`; v6 adds optional source attribution, profiles, and
+ * request negotiation. v4/v5 buckets remain valid through the legacy
+ * provider-level ownership fallback, so mixed-version environments keep their
+ * totals instead of treating every older server as stale.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "commandcode"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
+
+/** Environment-local identity linking a usage bucket to one transcript source. */
+export const UsageSourceId = TrimmedNonEmptyString.pipe(Schema.brand("UsageSourceId"));
+export type UsageSourceId = typeof UsageSourceId.Type;
+
+/** Optional configured-provider presentation for a transcript source. */
+export const UsageSourceProfile = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  displayName: Schema.optional(TrimmedNonEmptyString),
+  accentColor: Schema.optional(TrimmedNonEmptyString),
+});
+export type UsageSourceProfile = typeof UsageSourceProfile.Type;
 
 /**
  * A calendar day in the reporting time zone, formatted `YYYY-MM-DD`.
@@ -89,8 +104,9 @@ export const UsageTokenTotals = Schema.Struct({
 export type UsageTokenTotals = typeof UsageTokenTotals.Type;
 
 /**
- * One `(day, hourStart?, provider, model)` cell. `hourStart` is the UTC start
- * instant of a rolling bucket and is present only for hourly requests.
+ * One `(day, hourStart?, provider, sourceId?, model)` cell. `hourStart` is the
+ * UTC start instant of a rolling bucket and is present only for hourly
+ * requests.
  *
  * `costUsd` is the raw API-equivalent cost of these tokens. It is not money
  * spent: subscription plans bill separately. `unpricedRecords` counts records
@@ -101,6 +117,8 @@ export const UsageBucket = Schema.Struct({
   day: UsageDay,
   hourStart: Schema.optional(TrimmedNonEmptyString),
   provider: UsageProviderKind,
+  /** Links this bucket to one entry in `UsageSummary.sources` when available. */
+  sourceId: Schema.optional(UsageSourceId),
   model: TrimmedNonEmptyString,
   totals: UsageTokenTotals,
   costUsd: Schema.Number,
@@ -147,6 +165,9 @@ export const UsageSourceStatus = Schema.Literals(["ok", "missing", "partial", "f
 export type UsageSourceStatus = typeof UsageSourceStatus.Type;
 
 export const UsageSource = Schema.Struct({
+  /** Stable within one environment response and referenced by attributed buckets. */
+  sourceId: Schema.optional(UsageSourceId),
+  profile: Schema.optional(UsageSourceProfile),
   fingerprint: UsageSourceFingerprint,
   status: UsageSourceStatus,
   scannedFiles: NonNegativeInt,
@@ -194,6 +215,8 @@ export const UsageSummaryInput = Schema.Struct({
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   /** Exclusive UTC instant for an hourly rolling window. */
   untilTime: Schema.optional(TrimmedNonEmptyString),
+  /** Provider literals the requesting client can decode. */
+  supportedProviders: Schema.optional(ForwardCompatibleArray(UsageProviderKind)),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 

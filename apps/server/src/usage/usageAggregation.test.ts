@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { UsageAggregator } from "./usageAggregation.ts";
 import type { RateTable } from "./usagePricing.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
+import type { UsageSourceId } from "@t3tools/contracts";
 
 const rates: RateTable = new Map([
   [
@@ -200,5 +201,26 @@ describe("UsageAggregator", () => {
     ]);
 
     expect(result.buckets).toHaveLength(3);
+  });
+
+  it("separates transcript sources and attributes their buckets", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+    });
+    const work = "claude-work" as UsageSourceId;
+    const personal = "claude-personal" as UsageSourceId;
+
+    aggregator.add(record(), work);
+    aggregator.add(record({ sessionId: "session-b" }), personal);
+
+    expect(
+      aggregator.finish().buckets.map(({ sourceId, records }) => ({ sourceId, records })),
+    ).toEqual([
+      { sourceId: personal, records: 1 },
+      { sourceId: work, records: 1 },
+    ]);
   });
 });

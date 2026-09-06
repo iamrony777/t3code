@@ -17,6 +17,7 @@ import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -30,6 +31,10 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
+import {
+  ClaudeActiveUsageProbe,
+  ClaudeActiveUsageProbeError,
+} from "../Layers/ClaudeActiveUsageProbe.ts";
 import { makeClaudeScopedLimitNames } from "../Layers/claudeUsageLimits.ts";
 import {
   checkClaudeProviderStatus,
@@ -59,12 +64,68 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import {
+  makeClaudeCapabilitiesCacheKey,
+  makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
+  resolveClaudeConfigDirectoryPath,
+} from "./ClaudeHome.ts";
+import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
+import { resolveUsageLimitsAfterProbe } from "../providerUsageLimits.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+
+export function getClaudeCapabilitiesForRefresh<Key, A, E, R>(
+  cache: Cache.Cache<Key, A, E, R>,
+  key: Key,
+  refreshUsageLimits: boolean,
+): Effect.Effect<A, E, R> {
+  return refreshUsageLimits
+    ? Cache.invalidate(cache, key).pipe(Effect.andThen(Cache.get(cache, key)))
+    : Cache.get(cache, key);
+}
+
+const isClaudeAccountEnvironmentName = (name: string): boolean => {
+  const normalized = name.toUpperCase();
+  return (
+    normalized === "HOME" ||
+    normalized === "USERPROFILE" ||
+    normalized.startsWith("ANTHROPIC_") ||
+    normalized.startsWith("CLAUDE_") ||
+    normalized.startsWith("AWS_") ||
+    normalized.startsWith("GOOGLE_") ||
+    normalized.startsWith("VERTEX_")
+  );
+};
+
+export const makeClaudeActiveUsageCooldownKey = Effect.fn("makeClaudeActiveUsageCooldownKey")(
+  function* (input: {
+    readonly instanceId: string;
+    readonly profilePath: string;
+    readonly environment: NodeJS.ProcessEnv;
+  }) {
+    const crypto = yield* Crypto.Crypto;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const credentialMaterial = yield* fileSystem
+      .readFileString(path.join(input.profilePath, ".credentials.json"))
+      .pipe(Effect.orElseSucceed(() => "<missing>"));
+    const environmentMaterial = Object.entries(input.environment)
+      .filter(([name]) => isClaudeAccountEnvironmentName(name))
+      .toSorted(([left], [right]) => left.toUpperCase().localeCompare(right.toUpperCase()))
+      .map(
+        ([name, value]) =>
+          `${name.toUpperCase().length}:${name.toUpperCase()}${value?.length ?? 0}:${value ?? ""}`,
+      )
+      .join(";");
+    const material = `${input.instanceId.length}:${input.instanceId}|${environmentMaterial}|${credentialMaterial}`;
+    const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(material));
+    return Encoding.encodeHex(digest);
+  },
+);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -87,6 +148,7 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
 export type ClaudeDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
+  | ClaudeActiveUsageProbe
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -107,6 +169,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const crypto = yield* Crypto.Crypto;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const { cwd } = yield* ServerConfig;
@@ -114,6 +177,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
+      const activeUsageProbe = yield* ClaudeActiveUsageProbe;
       const modelCatalog = modelManifest.current.pipe(Effect.map(resolveClaudeModelCatalog));
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
@@ -172,29 +236,80 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
       });
       const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig, cwd);
+      const resolvedActiveProbeEnvironment = yield* makeClaudeEnvironment(
+        effectiveConfig,
+        processEnv,
+      );
+      const activeProbeProfileKey = yield* resolveClaudeConfigDirectoryPath(
+        effectiveConfig,
+        processEnv,
+      );
+      const activeProbeEnvironment = {
+        ...resolvedActiveProbeEnvironment,
+        CLAUDE_CONFIG_DIR: activeProbeProfileKey,
+      };
+      const activeProbeExecutablePath = yield* resolveClaudeSdkExecutablePath(
+        effectiveConfig.binaryPath,
+        activeProbeEnvironment,
+      );
 
       // Start the TTL-gated refresh without delaying provider readiness. The
       // next check observes a remote manifest after the background fetch lands.
-      const checkProvider = modelManifest.refreshInBackground.pipe(
-        Effect.andThen(
-          modelManifest.current.pipe(
-            Effect.flatMap((manifest) =>
-              checkClaudeProviderStatus(
-                effectiveConfig,
-                () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
-                processEnv,
-                cwd,
-                resolveClaudeModelCatalog(manifest),
-                scopedLimitNames,
+      const checkProviderWithUsageRefresh = (refreshUsageLimits: boolean) =>
+        modelManifest.refreshInBackground.pipe(
+          Effect.andThen(
+            modelManifest.current.pipe(
+              Effect.flatMap((manifest) =>
+                checkClaudeProviderStatus(
+                  effectiveConfig,
+                  () =>
+                    getClaudeCapabilitiesForRefresh(
+                      capabilitiesProbeCache,
+                      capabilitiesCacheKey,
+                      refreshUsageLimits,
+                    ),
+                  processEnv,
+                  cwd,
+                  resolveClaudeModelCatalog(manifest),
+                  scopedLimitNames,
+                  {
+                    refreshUsageLimits,
+                    probe: makeClaudeActiveUsageCooldownKey({
+                      instanceId,
+                      profilePath: activeProbeProfileKey,
+                      environment: activeProbeEnvironment,
+                    }).pipe(
+                      Effect.provideService(Crypto.Crypto, crypto),
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                      Effect.provideService(Path.Path, path),
+                      Effect.mapError(
+                        (cause) =>
+                          new ClaudeActiveUsageProbeError({
+                            reason: "spawnFailed",
+                            message: "Claude usage probe could not fingerprint its auth context.",
+                            cause,
+                          }),
+                      ),
+                      Effect.flatMap((cooldownKey) =>
+                        activeUsageProbe.probe({
+                          profileKey: activeProbeProfileKey,
+                          cooldownKey,
+                          executablePath: activeProbeExecutablePath,
+                          environment: activeProbeEnvironment,
+                        }),
+                      ),
+                    ),
+                  },
+                ),
               ),
+              Effect.map(stampIdentity),
             ),
-            Effect.map(stampIdentity),
           ),
-        ),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-      );
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+      const checkProvider = checkProviderWithUsageRefresh(false);
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<ClaudeSettings>>({
@@ -242,6 +357,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
             );
+      const refreshUsageLimits = () =>
+        checkProviderWithUsageRefresh(true).pipe(
+          Effect.flatMap((probedSnapshot) =>
+            snapshot.updateSnapshot((publishedSnapshot) => {
+              const usageLimits = resolveUsageLimitsAfterProbe({
+                published: publishedSnapshot.usageLimits,
+                probed: probedSnapshot.usageLimits,
+              });
+              const { usageLimits: _probedUsageLimits, ...rest } = probedSnapshot;
+              return usageLimits ? { ...rest, usageLimits } : rest;
+            }),
+          ),
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: "Failed to refresh Claude subscription usage limits.",
+                cause,
+              }),
+          ),
+        );
 
       return {
         instanceId,
@@ -255,6 +392,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        refreshUsageLimits,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

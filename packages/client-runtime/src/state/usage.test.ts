@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   UsageDay,
+  UsageProviderKind,
   USAGE_CONTRACT_VERSION,
   type UsageSummary,
 } from "@t3tools/contracts";
@@ -10,7 +11,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
-import { refreshUsage } from "./usage.ts";
+import { refreshUsage, withSupportedUsageProviders } from "./usage.ts";
 
 const input = {
   sinceDay: UsageDay.make("2026-09-05"),
@@ -79,6 +80,17 @@ function harness(ids = ["a"]) {
   } satisfies Parameters<typeof refreshUsage>[0];
   return { registry, environments, refresh: () => refreshUsage(options) };
 }
+
+describe("usage request negotiation", () => {
+  it("advertises every provider literal supported by the current client", () => {
+    const negotiated = withSupportedUsageProviders({
+      ...input,
+      supportedProviders: ["claude"],
+    });
+
+    expect(negotiated.supportedProviders).toEqual([...UsageProviderKind.literals]);
+  });
+});
 
 describe("manual usage refresh", () => {
   it.each(["success", "failure"])("waits for the rescan after a pricing %s", async (result) => {

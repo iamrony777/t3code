@@ -1,6 +1,7 @@
 import { Image } from "expo-image";
-import { Path, Svg } from "react-native-svg";
+import { G, Path, Svg } from "react-native-svg";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
+import { providerIconKind } from "./providerIconKind";
 
 type ProviderIconProps = {
   readonly provider: string | null | undefined;
@@ -12,8 +13,9 @@ export function ProviderIcon(props: ProviderIconProps) {
   const isDarkMode = themeAppearance === "dark";
   const size = props.size ?? 16;
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
+  const kind = providerIconKind(props.provider);
 
-  if (props.provider?.trim().toLowerCase() === "antigravity") {
+  if (kind === "antigravity") {
     return (
       <Image
         source={require("../../assets/antigravity.png")}
@@ -23,7 +25,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "claudeAgent") {
+  if (kind === "claudeAgent") {
     return (
       <Svg width={size} height={size} viewBox="0 0 256 257" fill="none">
         <Path
@@ -34,7 +36,18 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "grok") {
+  if (kind === "commandcode") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 700 700" fill="none">
+        <G transform="translate(0 700) scale(.1 -.1)" fill={mono}>
+          <Path d="M2305 6994c-371-13-682-39-893-74-598-103-963-350-1172-795C114 5858 54 5549 18 4995c-19-287-18-2669 0-2950 53-794 172-1175 464-1481 286-298 672-437 1367-489 616-47 2694-46 3267 0 685 56 1056 186 1339 470 289 289 424 685 475 1395 22 310 32 1055 27 1915-6 868-13 1102-42 1417-55 589-188 950-448 1216-305 311-678 435-1487 493-141 10-2428 21-2675 13zm33-1350c322-66 580-324 646-646 12-57 16-136 16-303v-225h948l5 243c4 201 8 255 25 318 67 248 222 437 447 545 138 67 195 79 370 79 143-1 154-2 245-33 279-96 476-307 552-587 29-111 29-297-1-410-69-261-263-478-511-572-113-43-194-53-431-53h-219v-948l238-5c253-5 310-14 432-64 243-99 438-327 495-576 47-209 17-419-88-607-57-102-205-250-307-307-433-242-960-71-1169 379-63 134-74 200-79 466l-4 232h-948v-219c0-149-5-243-14-294-60-312-299-565-611-649-112-30-298-30-410 0-519 139-776 708-534 1185 106 210 301 365 538 429 63 17 117 21 319 25l242 5v948h-225c-252 0-329 11-452 62-485 201-664 796-372 1232 116 174 310 306 514 349 93 20 248 21 343 1z" />
+          <Path d="M2080 5174c-187-50-302-241-256-425 31-119 118-216 231-256 42-15 84-18 260-18h210v210c0 176-3 218-18 260-39 111-136 200-252 230-72 18-103 18-175-1zM4705 5176c-75-19-125-49-178-105-86-92-91-112-95-373l-3-228h185c264 0 337 20 429 119 74 79 92 127 92 241 0 83-3 102-27 150-74 150-249 236-403 196zM3000 3525v-475h950v950h-950v-475zM2051 2550c-59-22-68-27-129-84-178-167-127-463 98-574 48-24 67-27 150-27 114 0 162 18 241 92 99 92 119 165 119 428v185h-212c-184-1-220-3-267-20zM4432 2348l3-224 33-66c38-77 92-130 171-167 48-22 70-26 146-26 82 0 97 3 157 33 77 38 130 92 167 171 22 47 26 70 26 146 0 76-4 99-26 146-37 79-90 133-167 171l-66 33-224 3-223 3 3-223z" />
+        </G>
+      </Svg>
+    );
+  }
+
+  if (kind === "grok") {
     const fill = isDarkMode ? "#F5F5F5" : "#0F0F0F";
     return (
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -50,7 +63,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "cursor") {
+  if (kind === "cursor") {
     return (
       <Svg width={size} height={size} viewBox="0 0 466.73 532.09" fill="none">
         <Path
@@ -61,7 +74,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "opencode") {
+  if (kind === "opencode") {
     return (
       <Svg width={size} height={size} viewBox="0 0 32 40" fill="none">
         <Path d="M24 32H8V16H24V32Z" fill={isDarkMode ? "#4B4646" : "#CFCECD"} />
@@ -70,7 +83,18 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  // codex (and unknown drivers)
+  if (kind === "unknown") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          fill={mono}
+          d="M12 2 22 12 12 22 2 12 12 2Zm0 3.25L5.25 12 12 18.75 18.75 12 12 5.25Z"
+        />
+      </Svg>
+    );
+  }
+
+  // Codex
   return (
     <Svg width={size} height={size} viewBox="0 0 256 260" fill="none">
       <Path

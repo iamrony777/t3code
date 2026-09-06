@@ -20,9 +20,11 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { CommandCodeCatalogIdentity, CommandCodeCatalogModel } from "../commandCodeCatalog.ts";
+import { fetchCommandCodeAccountUsage } from "../commandCodeAccountUsage.ts";
 import {
   commandCodeGlobalOptionsFromSettings,
   parseCommandCodeGlobalSettings,
@@ -311,7 +313,10 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
   ): Effect.fn.Return<
     CommandCodeProviderProbeResult,
     never,
-    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+    | ChildProcessSpawner.ChildProcessSpawner
+    | FileSystem.FileSystem
+    | HttpClient.HttpClient
+    | Path.Path
   > {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const fallbackModels = modelsFromSettings(settings);
@@ -408,9 +413,16 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       };
     }
 
-    const modelExit = yield* runModelListCommand(settings, environment).pipe(
-      Effect.timeoutOption(PROBE_TIMEOUT_MS),
-      Effect.result,
+    const [modelExit, accountUsageResult, skills] = yield* Effect.all(
+      [
+        runModelListCommand(settings, environment).pipe(
+          Effect.timeoutOption(PROBE_TIMEOUT_MS),
+          Effect.result,
+        ),
+        fetchCommandCodeAccountUsage({ environment, checkedAt }),
+        discoverCommandCodeSkills(cwd),
+      ],
+      { concurrency: "unbounded" },
     );
     const cliModels =
       Result.isSuccess(modelExit) &&
@@ -424,8 +436,6 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
       capabilities: EMPTY_CAPABILITIES,
     }));
     const modelDiscoveryFailed = cliModels.length === 0;
-    const skills = yield* discoverCommandCodeSkills(cwd);
-
     const snapshot = buildServerProvider({
       driver: PROVIDER,
       presentation: PRESENTATION,
@@ -440,8 +450,14 @@ export const probeCommandCodeProviderStatus = Effect.fn("probeCommandCodeProvide
         status: modelDiscoveryFailed ? "warning" : "ready",
         auth: {
           status: "authenticated",
-          ...(status.user ? { label: status.user } : {}),
+          ...(status.user
+            ? { label: status.user }
+            : accountUsageResult.accountLabel
+              ? { label: accountUsageResult.accountLabel }
+              : {}),
         },
+        usageLimits: accountUsageResult.usageLimits,
+        accountUsage: accountUsageResult.accountUsage,
         ...(modelDiscoveryFailed
           ? { message: "Command Code is ready, but its model list could not be loaded." }
           : {}),
@@ -479,7 +495,10 @@ export const checkCommandCodeProviderStatus = Effect.fn("checkCommandCodeProvide
   ): Effect.fn.Return<
     ServerProviderDraft,
     never,
-    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+    | ChildProcessSpawner.ChildProcessSpawner
+    | FileSystem.FileSystem
+    | HttpClient.HttpClient
+    | Path.Path
   > {
     return (yield* probeCommandCodeProviderStatus(
       settings,

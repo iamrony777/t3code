@@ -346,6 +346,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(Path.Path, path),
       );
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
@@ -427,6 +428,9 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
           attachCommandCodeGlobalOptions(current, globalOptions),
         );
       });
+      // One managed refresh re-runs the provider and account API probe, then
+      // retains last-good account/limit fields through the snapshot merge.
+      const refreshUsageLimits = () => snapshot.refresh;
 
       return {
         instanceId,
@@ -436,6 +440,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         accentColor,
         enabled,
         snapshot,
+        refreshUsageLimits,
         adapter,
         textGeneration,
         setGlobalOption,

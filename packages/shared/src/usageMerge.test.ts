@@ -1,9 +1,12 @@
 import {
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
+  type UsageSourceId,
   type UsageSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -40,6 +43,14 @@ function summary(
     homePath: string;
     volumeId?: string;
     distinctSessions?: number;
+    status?: "ok" | "missing" | "partial" | "failed";
+    message?: string | null;
+    sourceId?: UsageSourceId;
+    profile?: {
+      instanceId: ProviderInstanceId;
+      displayName?: string;
+      accentColor?: string;
+    };
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
 ): UsageSummary {
@@ -57,12 +68,14 @@ function summary(
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
       },
-      status: "ok" as const,
+      ...(source.sourceId === undefined ? {} : { sourceId: source.sourceId }),
+      ...(source.profile === undefined ? {} : { profile: source.profile }),
+      status: source.status ?? ("ok" as const),
       scannedFiles: 1,
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
-      message: null,
+      message: source.message ?? null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -94,13 +107,13 @@ describe("mergeUsage", () => {
     expect(merged.duplicateSources).toHaveLength(0);
   });
 
-  it("counts a shared transcript directory once", () => {
-    // Two worktree servers on one machine resolve the same provider home.
+  it("uses provider-level ownership for legacy buckets without source identity", () => {
+    // Two v5 worktree servers on one machine resolve the same provider home.
     const shared = { provider: "claude" as const, hostId: "mac", homePath: "/home/theo/.claude" };
     const merged = mergeUsage(
       [
-        environment("env-a", summary([bucket()], [shared])),
-        environment("env-b", summary([bucket()], [shared])),
+        environment("env-a", summary([bucket()], [shared], 5)),
+        environment("env-b", summary([bucket()], [shared], 5)),
       ],
       USAGE_CONTRACT_VERSION,
     );
@@ -158,7 +171,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],
@@ -193,6 +206,247 @@ describe("mergeUsage", () => {
 
     expect(merged.costUsd).toBe(14);
     expect(merged.staleEnvironments).toEqual([]);
+  });
+
+  it.each([4, 5])("keeps v%s summaries compatible", (contractVersion) => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket()],
+            [{ provider: "claude", hostId: "mac", homePath: "/a/.claude" }],
+            contractVersion,
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.staleEnvironments).toEqual([]);
+  });
+
+  it("deduplicates one physical source without dropping another source for the same provider", () => {
+    const shared = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.claude-work",
+      sourceId: "claude-work" as UsageSourceId,
+      profile: { instanceId: ProviderInstanceId.make("claude_work"), displayName: "Work" },
+    };
+    const personal = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.claude-personal",
+      sourceId: "claude-personal" as UsageSourceId,
+      profile: { instanceId: ProviderInstanceId.make("claude_personal"), displayName: "Personal" },
+    };
+    const merged = mergeUsage(
+      [
+        environment("env-a", summary([bucket({ sourceId: shared.sourceId })], [shared])),
+        environment(
+          "env-b",
+          summary(
+            [
+              bucket({ sourceId: shared.sourceId }),
+              bucket({ sourceId: personal.sourceId, costUsd: 4, records: 2 }),
+            ],
+            [shared, personal],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(14);
+    expect(merged.records).toBe(7);
+    expect(merged.sessions).toBe(2);
+    expect(merged.duplicateSources).toHaveLength(1);
+    expect(merged.contributingEnvironments).toEqual(["env-a", "env-b"]);
+    expect(merged.profiles.map((profile) => profile.displayName)).toEqual(["Work", "Personal"]);
+  });
+
+  it("keeps only the exact source that claimed a same-environment fingerprint", () => {
+    const fingerprint = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.claude",
+      volumeId: "16777220:1234",
+    };
+    const primary = {
+      ...fingerprint,
+      sourceId: "claude-primary" as UsageSourceId,
+      distinctSessions: 1,
+      profile: { instanceId: ProviderInstanceId.make("claude_primary"), displayName: "Primary" },
+    };
+    const duplicate = {
+      ...fingerprint,
+      sourceId: "claude-duplicate" as UsageSourceId,
+      distinctSessions: 2,
+      profile: {
+        instanceId: ProviderInstanceId.make("claude_duplicate"),
+        displayName: "Duplicate",
+      },
+    };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ sourceId: primary.sourceId }),
+              bucket({ sourceId: duplicate.sourceId, costUsd: 4, records: 2 }),
+            ],
+            [primary, duplicate],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.records).toBe(5);
+    expect(merged.sessions).toBe(1);
+    expect(merged.duplicateSources).toHaveLength(1);
+    expect(merged.profiles.map((profile) => profile.sourceId)).toEqual(["claude-primary"]);
+  });
+
+  it("derives totals and diagnostics for each owned profile source", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ sourceId: "claude-work" as UsageSourceId, costUsd: 3, records: 2 }),
+              bucket({ sourceId: "claude-work" as UsageSourceId, costUsd: 7, records: 4 }),
+            ],
+            [
+              {
+                provider: "claude",
+                hostId: "mac",
+                homePath: "/a/.claude-work",
+                sourceId: "claude-work" as UsageSourceId,
+                distinctSessions: 3,
+                status: "partial",
+                message: "2 transcript files could not be read.",
+                profile: {
+                  instanceId: ProviderInstanceId.make("claude_work"),
+                  displayName: "Work",
+                  accentColor: "#7c3aed",
+                },
+              },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.profiles).toEqual([
+      expect.objectContaining({
+        environmentId: "env-a",
+        sourceId: "claude-work",
+        provider: "claude",
+        instanceId: "claude_work",
+        label: "Work",
+        displayName: "Work",
+        accentColor: "#7c3aed",
+        status: "partial",
+        message: "2 transcript files could not be read.",
+        resolvedHomePath: "/a/.claude-work",
+        costUsd: 10,
+        totalTokens: 2320,
+        records: 6,
+        sessions: 3,
+      }),
+    ]);
+    expect(merged.providers[0]).toEqual(
+      expect.objectContaining({ provider: "claude", costUsd: 10, totalTokens: 2320, records: 6 }),
+    );
+  });
+
+  it("keeps a missing profile visible without counting its buckets or sessions", () => {
+    const missingSourceId = "claude-missing" as UsageSourceId;
+    const readySourceId = "claude-ready" as UsageSourceId;
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ sourceId: missingSourceId, costUsd: 99, records: 9 }),
+              bucket({ sourceId: readySourceId, costUsd: 3, records: 2 }),
+            ],
+            [
+              {
+                provider: "claude",
+                hostId: "mac",
+                homePath: "/profiles/missing/.claude",
+                sourceId: missingSourceId,
+                distinctSessions: 9,
+                status: "missing",
+                message: "Profile directory does not exist.",
+                profile: {
+                  instanceId: ProviderInstanceId.make("claude_missing"),
+                  displayName: "Missing",
+                },
+              },
+              {
+                provider: "claude",
+                hostId: "mac",
+                homePath: "/profiles/ready/.claude",
+                sourceId: readySourceId,
+                distinctSessions: 1,
+                profile: {
+                  instanceId: ProviderInstanceId.make("claude_ready"),
+                  displayName: "Ready",
+                },
+              },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged).toMatchObject({ costUsd: 3, records: 2, sessions: 1 });
+    expect(merged.profiles.find((profile) => profile.sourceId === missingSourceId)).toEqual(
+      expect.objectContaining({
+        status: "missing",
+        message: "Profile directory does not exist.",
+        resolvedHomePath: "/profiles/missing/.claude",
+        costUsd: 0,
+        totalTokens: 0,
+        records: 0,
+        sessions: 0,
+      }),
+    );
+  });
+
+  it("does not treat matching missing fingerprints as duplicate contributions", () => {
+    const missing = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/profiles/missing/.claude",
+      volumeId: "missing",
+      sourceId: "claude-missing" as UsageSourceId,
+      status: "missing" as const,
+      message: "Profile directory does not exist.",
+      profile: {
+        instanceId: ProviderInstanceId.make("claude_missing"),
+        displayName: "Missing",
+      },
+    };
+    const merged = mergeUsage(
+      [environment("env-a", summary([], [missing])), environment("env-b", summary([], [missing]))],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.duplicateSources).toEqual([]);
+    expect(merged.profiles).toHaveLength(2);
+    expect(merged.sessions).toBe(0);
   });
 
   it("derives provider shares and cost quality", () => {

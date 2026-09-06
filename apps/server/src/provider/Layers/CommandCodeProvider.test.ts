@@ -59,6 +59,7 @@ const catalogRuntimeLayer = Layer.mergeAll(
   ),
   commandCodeApiLayer,
 );
+const commandCodeStatusTestLayer = Layer.merge(NodeServices.layer, commandCodeApiLayer);
 
 describe("buildInitialCommandCodeProviderSnapshot", () => {
   it.effect("advertises the enabled Early Access provider while checking", () =>
@@ -491,7 +492,7 @@ describe("makeCommandCodeGlobalOptionsControllerForProvider", () => {
   );
 });
 
-it.layer(NodeServices.layer)("checkCommandCodeProviderStatus", (it) => {
+it.layer(commandCodeStatusTestLayer)("checkCommandCodeProviderStatus", (it) => {
   it.effect("reports authenticated status and discovered models", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -511,9 +512,29 @@ it.layer(NodeServices.layer)("checkCommandCodeProviderStatus", (it) => {
         );
         yield* fs.chmod(binaryPath, 0o755);
 
+        const accountApi = HttpClient.make((request) => {
+          const url = new URL(request.url);
+          const body = url.pathname.endsWith("/whoami")
+            ? { user: { userName: "rony" } }
+            : url.pathname.endsWith("/credits")
+              ? {
+                  credits: { monthlyCredits: 8, purchasedCredits: 1, freeCredits: 1 },
+                  windowLimits: { fiveHour: { used: 1, cap: 4 } },
+                }
+              : url.pathname.endsWith("/subscriptions")
+                ? { data: { planId: "individual-pro", status: "active" } }
+                : { totalCount: 2, totalTokens: 50 };
+          return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body)));
+        });
+
         const snapshot = yield* checkCommandCodeProviderStatus(
           decodeSettings({ binaryPath, customModels: ["custom/model"] }),
-        );
+          {
+            HOME: dir,
+            PATH: process.env.PATH,
+            COMMAND_CODE_API_KEY: "integration-secret",
+          },
+        ).pipe(Effect.provideService(HttpClient.HttpClient, accountApi));
 
         expect(snapshot.status).toBe("ready");
         expect(snapshot.installed).toBe(true);
@@ -525,6 +546,22 @@ it.layer(NodeServices.layer)("checkCommandCodeProviderStatus", (it) => {
           "custom/model",
         ]);
         expect(snapshot.models[0]?.isDefault).toBe(true);
+        expect(snapshot.accountUsage).toMatchObject({
+          accountLabel: "rony",
+          plan: "Pro",
+          status: "active",
+          requestCount: 2,
+          tokens: { total: 50 },
+          creditsBalance: { monthly: 8, purchased: 1, free: 1, total: 10 },
+        });
+        expect(snapshot.usageLimits?.windows).toEqual([
+          {
+            id: "five_hour",
+            kind: "session",
+            label: "5-hour",
+            usedPercent: 25,
+          },
+        ]);
       }),
     ),
   );
@@ -588,7 +625,9 @@ it.layer(NodeServices.layer)("checkCommandCodeProviderStatus", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-command-code-hanging-list-" });
+        const dir = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-command-code-hanging-list-",
+        });
         const binaryPath = path.join(dir, "command-code");
         yield* fs.writeFileString(binaryPath, "#!/bin/sh\nexit 0\n");
         yield* fs.chmod(binaryPath, 0o755);

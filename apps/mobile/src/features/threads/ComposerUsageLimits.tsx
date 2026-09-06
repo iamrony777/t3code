@@ -3,9 +3,8 @@ import { Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
+import { presentComposerUsageAccount } from "../usage/accountUsagePresentation";
 import { AccountLimits, ResetCredits } from "../usage/UsageLimitsSection";
-
-const DRIVER_LABEL: Partial<Record<string, string>> = { codex: "Codex", claudeAgent: "Claude" };
 
 /**
  * The /usage-limits result, docked above the composer. It is the Usage → Limits
@@ -42,24 +41,17 @@ export function ComposerUsageLimits({
         style={{ maxHeight: Math.round(height * 0.4) }}
       >
         {report.accounts.map((account, index) => {
-          const driverLabel = DRIVER_LABEL[account.driver] ?? String(account.driver);
+          const presentation = presentComposerUsageAccount(account);
           return (
             <AccountLimits
               key={account.id}
               dense
               first={index === 0}
               driver={account.driver}
-              label={driverLabel}
+              label={presentation.driverLabel}
               // Siblings need telling apart: a custom instance without a name shows its
               // id, and a pooled account shows its hub and account id.
-              instanceLabel={
-                account.instanceId
-                  ? account.displayName?.trim() ||
-                    (String(account.instanceId) !== String(account.driver)
-                      ? account.instanceId
-                      : driverLabel)
-                  : account.label
-              }
+              instanceLabel={presentation.instanceLabel}
               detail={account.plan}
               limits={account.limits}
               now={now}

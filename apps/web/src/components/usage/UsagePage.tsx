@@ -172,7 +172,7 @@ export function UsagePage() {
         Array.from(presentations, ([environmentId, presentation]) => {
           if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) return;
           if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
-            return refreshProviders({ environmentId, input: {} });
+            return refreshProviders({ environmentId, input: { refreshUsageLimits: true } });
           }
         }),
       ).finally(() => {
@@ -450,6 +450,8 @@ export function UsagePage() {
                   </div>
                 </section>
 
+                <ProfilesSection merged={merged} />
+
                 <section className="flex flex-col gap-3">
                   <div className="flex items-center justify-between gap-3">
                     <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
@@ -615,6 +617,68 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="text-base font-medium text-foreground tabular-nums">{value}</span>
     </div>
+  );
+}
+
+const PROFILE_STATUS_LABEL = {
+  ok: "Ready",
+  missing: "Source missing",
+  partial: "Partial scan",
+  failed: "Scan failed",
+} as const;
+
+function ProfilesSection({ merged }: { readonly merged: ReturnType<typeof useUsage>["merged"] }) {
+  if (merged.profiles.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-medium text-foreground">Profiles</h2>
+        {merged.costQuality.unpricedShare > 0 ? (
+          <span className="text-xs text-muted-foreground">
+            Some historical records are unpriced and excluded from cost.
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {merged.profiles.map((profile) => (
+          <article
+            key={`${profile.environmentId}:${profile.sourceId}`}
+            className="flex min-w-0 flex-col gap-2 rounded-lg border border-border/60 p-3"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                aria-hidden
+                className="size-2 shrink-0 rounded-full"
+                style={{
+                  backgroundColor:
+                    profile.accentColor ?? PROVIDER_PRESENTATION[profile.provider].color,
+                }}
+              />
+              <ProviderMark provider={profile.provider} className="size-4" />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                {profile.displayName ?? profile.label}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {PROFILE_STATUS_LABEL[profile.status]}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
+              <span>{formatTokens(profile.totalTokens)} tokens</span>
+              <span>{formatUsd(profile.costUsd)} API equivalent</span>
+              <span>
+                {formatCount(profile.sessions)} {profile.sessions === 1 ? "session" : "sessions"}
+              </span>
+            </div>
+            {profile.message ? (
+              <span className="text-xs text-amber-700 dark:text-amber-300">{profile.message}</span>
+            ) : null}
+            <span className="truncate font-mono text-[11px] text-muted-foreground">
+              {profile.resolvedHomePath}
+            </span>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

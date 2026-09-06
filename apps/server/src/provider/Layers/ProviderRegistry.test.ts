@@ -35,6 +35,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { ClaudeActiveUsageProbe, ClaudeActiveUsageProbeError } from "./ClaudeActiveUsageProbe.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import * as ModelManifest from "../ModelManifest.ts";
@@ -84,6 +85,13 @@ const TestHttpClientLive = Layer.succeed(
   ),
 );
 
+const TestClaudeActiveUsageProbeLayer = Layer.succeed(
+  ClaudeActiveUsageProbe,
+  ClaudeActiveUsageProbe.of({
+    probe: () => Effect.die("Active Claude usage probing is not expected in this test."),
+  }),
+);
+
 const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   reportClientActivity: () => Effect.void,
   removeRpcClient: () => Effect.void,
@@ -111,7 +119,7 @@ const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPol
   hasDemand: () => Effect.succeed(true),
   shouldRunScopeWork: () => Effect.succeed(true),
   shouldRunOpportunisticWork: Effect.succeed(true),
-});
+}).pipe(Layer.provideMerge(TestClaudeActiveUsageProbeLayer));
 
 function selectDescriptor(
   id: string,
@@ -143,6 +151,12 @@ type TestClaudeCapabilities = {
   readonly tokenSource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly usage?: {
+    readonly rate_limits_available: boolean;
+    readonly rate_limits: null | {
+      readonly five_hour?: { readonly utilization: number; readonly resets_at: string };
+    };
+  };
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -3172,6 +3186,141 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   code: 1,
                 };
               throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("uses the active limits fallback only for an explicit eligible refresh", () =>
+        Effect.gen(function* () {
+          let activeCalls = 0;
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              subscriptionType: "pro",
+              tokenSource: "oauth",
+              apiProvider: "firstParty",
+              usage: { rate_limits_available: true, rate_limits: null },
+            }),
+            {},
+            undefined,
+            undefined,
+            undefined,
+            {
+              refreshUsageLimits: true,
+              probe: Effect.sync(() => {
+                activeCalls += 1;
+                return {
+                  checkedAt: "2027-01-15T08:00:00.000Z",
+                  windows: [
+                    {
+                      id: "five_hour",
+                      kind: "session" as const,
+                      label: "Session",
+                      usedPercent: 14,
+                      resetsAt: "2027-01-15T09:00:00.000Z",
+                      windowDurationMins: 300,
+                    },
+                  ],
+                };
+              }),
+            },
+          );
+
+          assert.strictEqual(activeCalls, 1);
+          assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 14);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("never uses the active limits fallback for API billing or a passive refresh", () =>
+        Effect.gen(function* () {
+          let activeCalls = 0;
+          const activeProbe = Effect.sync(() => {
+            activeCalls += 1;
+            throw new Error("active probe must not run");
+          });
+          const capabilities = claudeCapabilities({
+            subscriptionType: "pro",
+            tokenSource: "oauth",
+            apiProvider: "firstParty",
+            usage: { rate_limits_available: true, rate_limits: null },
+          });
+          yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            capabilities,
+            {},
+            undefined,
+            undefined,
+            undefined,
+            { refreshUsageLimits: false, probe: activeProbe },
+          );
+          yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            capabilities,
+            { ANTHROPIC_BASE_URL: "https://proxy.example.test" },
+            undefined,
+            undefined,
+            undefined,
+            { refreshUsageLimits: true, probe: activeProbe },
+          );
+          assert.strictEqual(activeCalls, 0);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("reports a precise unavailable reason when an eligible active fallback fails", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              subscriptionType: "pro",
+              tokenSource: "oauth",
+              apiProvider: "firstParty",
+              usage: { rate_limits_available: true, rate_limits: null },
+            }),
+            {},
+            undefined,
+            undefined,
+            undefined,
+            {
+              refreshUsageLimits: true,
+              probe: Effect.fail(
+                new ClaudeActiveUsageProbeError({
+                  reason: "invalidCapture",
+                  message: "missing rate limits",
+                }),
+              ),
+            },
+          );
+
+          assert.deepStrictEqual(status.usageLimits?.unavailable, {
+            reason: "probeFailed",
+            message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
+          });
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
             }),
           ),
         ),

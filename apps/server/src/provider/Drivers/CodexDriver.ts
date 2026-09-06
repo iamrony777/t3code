@@ -271,6 +271,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               ),
             );
 
+      // The managed refresh performs one complete app-server check and owns
+      // last-good usage-limit merging when that check cannot refresh limits.
+      const refreshUsageLimits = () => snapshot.refresh;
+
       // Redemption spends something on the user's account. It serialises on
       // the account (instances sharing a Codex home share the credit), keeps
       // one idempotency key until Codex reports an outcome, and is bounded so
@@ -342,6 +346,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        refreshUsageLimits,
         consumeResetCredit,
         adapter,
         textGeneration,

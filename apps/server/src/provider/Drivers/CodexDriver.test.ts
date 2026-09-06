@@ -5,11 +5,14 @@ import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient } from "effect/unstable/http";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -54,8 +57,89 @@ const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 const noSpawn = ChildProcessSpawner.make(() =>
   Effect.die("Disabled Codex must not spawn a process"),
 );
+const encodeUsageFixture = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      failRateLimits: Schema.optional(Schema.Boolean),
+      usedPercent: Schema.optional(Schema.Number),
+    }),
+  ),
+);
 
 it.layer(testLayer)("CodexDriver", (it) => {
+  it.effect.skipIf(windowsHost)(
+    "refreshes native usage once and keeps the last good limits on failure",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-usage-refresh-" });
+        const binaryPath = NodePath.join(tempDir, "codex");
+        const usageFile = NodePath.join(tempDir, "usage.json");
+        const peerPath = NodePath.resolve(
+          process.cwd(),
+          "packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+        );
+        yield* fs.writeFileString(
+          binaryPath,
+          '#!/bin/sh\nexec "$T3_TEST_NODE" "$T3_TEST_CODEX_PEER"\n',
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+        yield* fs.writeFileString(usageFile, encodeUsageFixture({ usedPercent: 12 }));
+
+        let appServerSpawns = 0;
+        const initialSpawnStarted = yield* Deferred.make<void>();
+        const recordingSpawner = ChildProcessSpawner.make((command) => {
+          if (ChildProcess.isStandardCommand(command) && command.args.includes("app-server")) {
+            appServerSpawns += 1;
+            return Deferred.succeed(initialSpawnStarted, undefined).pipe(
+              Effect.andThen(baseSpawner.spawn(command)),
+            );
+          }
+          return baseSpawner.spawn(command);
+        });
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("codex-usage"),
+          displayName: "Codex usage",
+          enabled: true,
+          environment: [
+            {
+              name: "CODEX_APP_SERVER_TEST_USAGE_FILE",
+              value: usageFile,
+              sensitive: false,
+            },
+            { name: "T3_TEST_NODE", value: process.execPath, sensitive: false },
+            { name: "T3_TEST_CODEX_PEER", value: peerPath, sensitive: false },
+          ],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            binaryPath,
+            homePath: tempDir,
+          },
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recordingSpawner));
+        const refreshUsageLimits = instance.refreshUsageLimits;
+        if (!refreshUsageLimits) return yield* Effect.die("Codex usage refresh is missing");
+
+        yield* Deferred.await(initialSpawnStarted);
+        const first = yield* refreshUsageLimits();
+        expect(first.usageLimits?.windows[0]?.usedPercent).toBe(12);
+
+        const baselineSpawns = appServerSpawns;
+        const firstCheckedAt = first.usageLimits?.checkedAt;
+        yield* fs.writeFileString(usageFile, encodeUsageFixture({ usedPercent: 35 }));
+        yield* TestClock.adjust("1 second");
+        const refreshed = yield* refreshUsageLimits();
+        expect(appServerSpawns - baselineSpawns).toBe(1);
+        expect(refreshed.usageLimits?.checkedAt).not.toBe(firstCheckedAt);
+        expect(refreshed.usageLimits?.windows[0]?.usedPercent).toBe(35);
+
+        yield* fs.writeFileString(usageFile, encodeUsageFixture({ failRateLimits: true }));
+        yield* TestClock.adjust("1 second");
+        const failed = yield* refreshUsageLimits();
+        expect(failed.usageLimits).toEqual(refreshed.usageLimits);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>

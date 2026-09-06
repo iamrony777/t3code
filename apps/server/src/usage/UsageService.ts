@@ -15,10 +15,15 @@
 import * as NodeOS from "node:os";
 
 import {
+  ClaudeSettings,
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
   type ProviderInstanceConfigMap,
   type ServerSettings as ServerSettingsValue,
+  UsageProviderKind,
+  UsageSourceId,
   type UsageSource,
+  type UsageSourceProfile,
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
@@ -42,10 +47,11 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ServerConfig } from "../config.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
+import { resolveClaudeConfigDirPath } from "../provider/Drivers/ClaudeSkills.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { resolveCommandCodeSettingsFilePath } from "../provider/commandCodeGlobalOptions.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -60,11 +66,7 @@ import {
   pruneScanCache,
   type ScanCache,
 } from "./usageScanCache.ts";
-import {
-  isReportedProvider,
-  type UsageRecord,
-  type UsageScanProvider,
-} from "./usageTranscripts.ts";
+import { type UsageRecord, type UsageScanProvider } from "./usageTranscripts.ts";
 
 const LITELLM_RATES_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -101,6 +103,24 @@ const encodeRatesCache = Schema.encodeEffect(
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown as unknown as Schema.Codec<unknown>);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
+const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+
+interface TranscriptDir {
+  readonly provider: UsageScanProvider;
+  readonly dir: string;
+  readonly fileName?: string;
+  readonly sourceId?: UsageSourceId;
+  readonly profile?: UsageSourceProfile;
+}
+
+interface ResolvedTranscriptDir extends TranscriptDir {
+  readonly volumeId: string;
+}
+
+const compareInstanceIds = (
+  [left]: readonly [string, unknown],
+  [right]: readonly [string, unknown],
+) => (left < right ? -1 : left > right ? 1 : 0);
 
 export class UsageService extends Context.Service<
   UsageService,
@@ -227,19 +247,6 @@ export const make = Effect.gen(function* () {
   );
 
   /**
-   * Claude's config dir is the home itself when overridden, but a default
-   * install nests transcripts under `~/.claude/projects`. Probe both.
-   */
-  const resolveClaudeTranscriptDir = (homePath: string) =>
-    Effect.gen(function* () {
-      const nested = path.join(homePath, ".claude", "projects");
-      const nestedExists = yield* fileSystem
-        .exists(nested)
-        .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      return nestedExists ? nested : path.join(homePath, "projects");
-    });
-
-  /**
    * Command Code transcript directories, one per configured instance.
    *
    * Command Code has no home setting of its own: it reads `~/.commandcode` out
@@ -252,22 +259,82 @@ export const make = Effect.gen(function* () {
    */
   const resolveCommandCodeTranscriptDirs = (
     providerInstances: ProviderInstanceConfigMap,
-  ): readonly string[] => {
+  ): readonly TranscriptDir[] => {
     // The Command Code driver kind and its usage provider kind share a slug.
-    const environments = Object.values(providerInstances)
-      .filter((instance) => instance.driver === "commandcode")
-      .map((instance) => mergeProviderInstanceEnvironment(instance.environment));
-    if (environments.length === 0) environments.push(process.env);
+    const instances = Object.entries(providerInstances)
+      .filter(([, instance]) => instance.driver === "commandcode")
+      .sort(compareInstanceIds);
 
-    const dirs = new Set<string>();
-    for (const environment of environments) {
+    const dirs = new Map<string, TranscriptDir>();
+    for (const [instanceId, instance] of instances) {
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
       const settingsFilePath = resolveCommandCodeSettingsFilePath(environment, path.join);
       if (settingsFilePath === undefined) continue;
       // `<home>/.commandcode/config.json` sits beside `<home>/.commandcode/projects`.
-      dirs.add(path.join(path.dirname(settingsFilePath), "projects"));
+      const dir = path.resolve(path.join(path.dirname(settingsFilePath), "projects"));
+      if (dirs.has(dir)) continue;
+      dirs.set(dir, {
+        provider: "commandcode",
+        dir,
+        sourceId: UsageSourceId.make(instanceId),
+        profile: {
+          instanceId: ProviderInstanceId.make(instanceId),
+          ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+          ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+        },
+      });
     }
-    return [...dirs];
+    return [...dirs.values()];
   };
+
+  const resolveClaudeTranscriptDirs = Effect.fn("UsageService.resolveClaudeTranscriptDirs")(
+    function* (providerInstances: ProviderInstanceConfigMap) {
+      const instances = Object.entries(providerInstances)
+        .filter(([, instance]) => instance.driver === "claudeAgent")
+        .sort(compareInstanceIds);
+      const dirs = new Map<string, TranscriptDir>();
+
+      for (const [instanceId, instance] of instances) {
+        const decoded = decodeClaudeSettings(instance.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+        const configDir = yield* resolveClaudeConfigDirPath(decoded.value, environment);
+        const dir = path.resolve(path.join(configDir, "projects"));
+        if (dirs.has(dir)) continue;
+        dirs.set(dir, {
+          provider: "claude",
+          dir,
+          sourceId: UsageSourceId.make(instanceId),
+          profile: {
+            instanceId: ProviderInstanceId.make(instanceId),
+            ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+            ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+          },
+        });
+      }
+
+      return [...dirs.values()];
+    },
+  );
+
+  /** Canonicalize existing roots and collapse aliases before walking either path. */
+  const canonicalizeTranscriptDirs = Effect.fn("UsageService.canonicalizeTranscriptDirs")(
+    function* (dirs: readonly TranscriptDir[]) {
+      const canonical: ResolvedTranscriptDir[] = [];
+      const seen = new Set<string>();
+      for (const source of dirs) {
+        const resolved = path.resolve(source.dir);
+        const dir = yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved));
+        const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+        const identity = volumeId.length > 0 ? `inode:${volumeId}` : `path:${dir}`;
+        const key = `${source.provider}\0${identity}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        canonical.push({ ...source, dir, volumeId });
+      }
+      return canonical;
+    },
+  );
 
   // A settings failure must not silently discard custom rates or transcript homes.
   const readSettings = settingsService.getSettings.pipe(
@@ -285,8 +352,8 @@ export const make = Effect.gen(function* () {
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
     settings: ServerSettingsValue,
   ) {
-    const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
-    const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
+    const providerInstances = deriveProviderInstanceConfigMap(settings);
+    const claudeDirs = yield* resolveClaudeTranscriptDirs(providerInstances);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
     // Grok Settings only expose the binary path; home is `$GROK_HOME` or `~/.grok`.
     // Empty/whitespace GROK_HOME must fall back: coalescing alone would scan cwd.
@@ -296,8 +363,8 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
-    const dirs: Array<{ provider: UsageScanProvider; dir: string; fileName?: string }> = [
-      { provider: "claude", dir: claudeDir },
+    const dirs: TranscriptDir[] = [
+      ...claudeDirs,
       { provider: "codex", dir: path.join(codexLayout.sharedHomePath, "sessions") },
       {
         provider: "grok",
@@ -306,11 +373,9 @@ export const make = Effect.gen(function* () {
       },
     ];
 
-    for (const dir of resolveCommandCodeTranscriptDirs(settings.providerInstances)) {
-      dirs.push({ provider: "commandcode", dir });
-    }
+    dirs.push(...resolveCommandCodeTranscriptDirs(providerInstances));
 
-    return dirs;
+    return yield* canonicalizeTranscriptDirs(dirs);
   });
 
   /**
@@ -414,6 +479,8 @@ export const make = Effect.gen(function* () {
     readonly provider: UsageScanProvider;
     readonly dir: string;
     readonly volumeId: string;
+    readonly sourceId?: UsageSourceId;
+    readonly profile?: UsageSourceProfile;
     /** Parsed records per file, or `null` when the directory does not exist. */
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
@@ -422,21 +489,22 @@ export const make = Effect.gen(function* () {
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
     windowStartMs: number,
-    settings: ServerSettingsValue,
+    dirs: readonly ResolvedTranscriptDir[],
   ) {
-    // The home resolvers ask for `Path` themselves; satisfy them from the
-    // instance we already hold so the scan stays context-free.
-    const dirs = yield* resolveTranscriptDirs(settings).pipe(
-      Effect.provideService(Path.Path, path),
-    );
     const scanned: ScannedDir[] = [];
-    for (const { provider, dir, fileName } of dirs) {
-      const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+    for (const { provider, dir, fileName, sourceId, profile, volumeId } of dirs) {
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!exists) {
-        scanned.push({ provider, dir, volumeId, files: null });
+        scanned.push({
+          provider,
+          dir,
+          volumeId,
+          ...(sourceId === undefined ? {} : { sourceId }),
+          ...(profile === undefined ? {} : { profile }),
+          files: null,
+        });
         continue;
       }
       const files = yield* Effect.promise(() =>
@@ -452,7 +520,14 @@ export const make = Effect.gen(function* () {
         const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         parsedFiles.push({ path: file.path, records });
       }
-      scanned.push({ provider, dir, volumeId, files: parsedFiles });
+      scanned.push({
+        provider,
+        dir,
+        volumeId,
+        ...(sourceId === undefined ? {} : { sourceId }),
+        ...(profile === undefined ? {} : { profile }),
+        files: parsedFiles,
+      });
     }
     return scanned;
   });
@@ -460,14 +535,8 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    transcriptDirs: readonly ResolvedTranscriptDir[],
   ) {
-    if (input.sinceDay > input.untilDay) {
-      return yield* new UsageReadError({
-        reason: "invalidWindow",
-        detail: `sinceDay '${input.sinceDay}' is after untilDay '${input.untilDay}'`,
-      });
-    }
-
     let hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
     if (input.resolution === "hour") {
       const sinceTime =
@@ -510,7 +579,7 @@ export const make = Effect.gen(function* () {
     // loads while transcripts stream instead of gating them: a cold rates
     // fetch on a slow network no longer delays the scan by its own timeout.
     const [, scannedDirs] = yield* Effect.all(
-      [ensureRates(false), collectDirs(windowStartMs, settings)],
+      [ensureRates(false), collectDirs(windowStartMs, transcriptDirs)],
       { concurrency: 2 },
     );
 
@@ -528,14 +597,11 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, volumeId, files } of scannedDirs) {
-      // Unreported providers are still scanned — their records price and cache
-      // like any other — but they contribute no diagnostics row, because the
-      // contract's fingerprint cannot name them.
-      const reported = isReportedProvider(provider);
+    for (const { provider, dir, volumeId, sourceId, profile, files } of scannedDirs) {
       if (files === null) {
-        if (!reported) continue;
         sources.push({
+          ...(sourceId === undefined ? {} : { sourceId }),
+          ...(profile === undefined ? {} : { profile }),
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
           status: "missing",
           scannedFiles: 0,
@@ -564,14 +630,15 @@ export const make = Effect.gen(function* () {
         for (const record of file.records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
-          if (aggregator.add(record) && record.sessionId.length > 0) {
+          if (aggregator.add(record, sourceId) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
           }
         }
       }
 
-      if (!reported) continue;
       sources.push({
+        ...(sourceId === undefined ? {} : { sourceId }),
+        ...(profile === undefined ? {} : { profile }),
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
         status: "ok",
         scannedFiles,
@@ -601,9 +668,7 @@ export const make = Effect.gen(function* () {
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
-      // Command Code buckets never reach the wire: its literal is not in the
-      // usage contract, so encoding one would fail the whole summary.
-      buckets: aggregated.buckets.filter((bucket) => isReportedProvider(bucket.provider)),
+      buckets: aggregated.buckets,
       sources,
       pricing: pricing(),
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
@@ -611,15 +676,16 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * In-flight scans by window and custom prices, so concurrent identical requests (the usage
-   * page open on two clients at once) share one scan instead of racing over
-   * the same corpus twice.
+   * In-flight scans by window, prices, and canonical source snapshot. Provider
+   * negotiation is projected after the shared scan, so old and new clients
+   * reading the same corpus do not walk it independently.
    */
   const inflightScans = new Map<string, Deferred.Deferred<UsageSummary, UsageReadError>>();
 
   const scanKey = (
     input: UsageSummaryInput,
     priceOverrides: ServerSettingsValue["usagePriceOverrides"],
+    transcriptDirs: readonly ResolvedTranscriptDir[],
   ): string =>
     JSON.stringify([
       input.timeZone,
@@ -629,11 +695,36 @@ export const make = Effect.gen(function* () {
       input.sinceTime ?? null,
       input.untilTime ?? null,
       priceOverrides,
+      transcriptDirs,
     ]);
 
+  const projectSummary = (summary: UsageSummary, input: UsageSummaryInput): UsageSummary => {
+    const supportedProviders = new Set(
+      (input.supportedProviders ?? ["claude", "codex"]).filter((provider) =>
+        UsageProviderKind.literals.includes(provider),
+      ),
+    );
+    return {
+      ...summary,
+      buckets: summary.buckets.filter((bucket) => supportedProviders.has(bucket.provider)),
+      sources: summary.sources.filter((source) =>
+        supportedProviders.has(source.fingerprint.provider),
+      ),
+    };
+  };
+
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
+    if (input.sinceDay > input.untilDay) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: `sinceDay '${input.sinceDay}' is after untilDay '${input.untilDay}'`,
+      });
+    }
     const settings = yield* readSettings;
-    const key = scanKey(input, settings.usagePriceOverrides);
+    const transcriptDirs = yield* resolveTranscriptDirs(settings).pipe(
+      Effect.provideService(Path.Path, path),
+    );
+    const key = scanKey(input, settings.usagePriceOverrides, transcriptDirs);
     const deferred = yield* Effect.uninterruptible(
       Effect.gen(function* () {
         const existing = inflightScans.get(key);
@@ -645,7 +736,7 @@ export const make = Effect.gen(function* () {
         inflightScans.set(key, created);
         // Detached so one departing client cannot tear the scan out from under
         // the fibers awaiting it; a finished scan warms the cache either way.
-        yield* scanSummary(input, settings).pipe(
+        yield* scanSummary(input, settings, transcriptDirs).pipe(
           Effect.onExit((exit) =>
             Effect.sync(() => inflightScans.delete(key)).pipe(
               Effect.andThen(Deferred.done(created, exit)),
@@ -658,7 +749,7 @@ export const make = Effect.gen(function* () {
     );
     // Waiting stays interruptible. The detached scan continues for other
     // callers and still warms the cache if this caller leaves.
-    return yield* Deferred.await(deferred);
+    return projectSummary(yield* Deferred.await(deferred), input);
   });
 
   return { readSummary, refreshRates } as const;

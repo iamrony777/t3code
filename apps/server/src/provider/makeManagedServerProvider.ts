@@ -57,6 +57,56 @@ function withUsageLimits(
   return usageLimits ? { ...rest, usageLimits } : rest;
 }
 
+function withAccountUsage(
+  snapshot: ServerProvider,
+  accountUsage: ServerProvider["accountUsage"],
+): ServerProvider {
+  if (snapshot.accountUsage === accountUsage) {
+    return snapshot;
+  }
+  const { accountUsage: _previous, ...rest } = snapshot;
+  return accountUsage ? { ...rest, accountUsage } : rest;
+}
+
+function hasAccountSwitched(input: {
+  readonly published: ServerProvider["accountUsage"];
+  readonly probed: ServerProvider["accountUsage"];
+}): boolean {
+  const { published, probed } = input;
+  if (published === undefined || probed === undefined) return false;
+  return published.accountId !== undefined && probed.accountId !== undefined
+    ? published.accountId !== probed.accountId
+    : published.accountLabel !== undefined &&
+        probed.accountLabel !== undefined &&
+        published.accountLabel !== probed.accountLabel;
+}
+
+function resolveAccountUsageAfterProbe(input: {
+  readonly published: ServerProvider["accountUsage"];
+  readonly probed: ServerProvider["accountUsage"];
+  readonly accountSwitched: boolean;
+}): ServerProvider["accountUsage"] {
+  const { published, probed } = input;
+  if (probed === undefined) return undefined;
+  if (probed.unavailable?.reason !== "probeFailed") return probed;
+  if (published === undefined) return probed;
+
+  const hasUsableFreshField = Object.entries(probed).some(
+    ([key, value]) => key !== "checkedAt" && key !== "unavailable" && value !== undefined,
+  );
+  if (!hasUsableFreshField) return published;
+
+  if (input.accountSwitched) {
+    return probed;
+  }
+
+  const { unavailable: _staleUnavailable, ...publishedFields } = published;
+  return {
+    ...publishedFields,
+    ...probed,
+  };
+}
+
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
   Settings,
 >(input: {
@@ -107,7 +157,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       }
       // Enrichment derives from the snapshot it was handed; a runtime usage
       // update that landed since must not be reverted by it.
-      const merged = withUsageLimits(nextSnapshot, state.snapshot.usageLimits);
+      const merged = withAccountUsage(
+        withUsageLimits(nextSnapshot, state.snapshot.usageLimits),
+        state.snapshot.accountUsage,
+      );
       if (Equal.equals(state.snapshot, merged)) {
         return [null, state] as const;
       }
@@ -209,11 +262,24 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         const generation = input.enrichSnapshot
           ? state.enrichmentGeneration + 1
           : state.enrichmentGeneration;
-        const snapshot = withUsageLimits(
-          probedSnapshot,
-          resolveUsageLimitsAfterProbe({
-            published: state.snapshot.usageLimits,
-            probed: probedSnapshot.usageLimits,
+        const accountSwitched = hasAccountSwitched({
+          published: state.snapshot.accountUsage,
+          probed: probedSnapshot.accountUsage,
+        });
+        const snapshot = withAccountUsage(
+          withUsageLimits(
+            probedSnapshot,
+            accountSwitched
+              ? probedSnapshot.usageLimits
+              : resolveUsageLimitsAfterProbe({
+                  published: state.snapshot.usageLimits,
+                  probed: probedSnapshot.usageLimits,
+                }),
+          ),
+          resolveAccountUsageAfterProbe({
+            published: state.snapshot.accountUsage,
+            probed: probedSnapshot.accountUsage,
+            accountSwitched,
           }),
         );
         return [

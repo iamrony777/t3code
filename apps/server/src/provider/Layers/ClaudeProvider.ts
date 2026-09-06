@@ -42,6 +42,10 @@ import {
   recordClaudeUsageResponse,
 } from "./claudeUsageLimits.ts";
 import {
+  type ClaudeActiveUsageProbeError,
+  shouldRunClaudeActiveUsageProbe,
+} from "./ClaudeActiveUsageProbe.ts";
+import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
   formatClaudeVersionUpgradeMessage,
@@ -425,6 +429,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   modelCatalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
+  activeUsage?: {
+    readonly refreshUsageLimits: boolean;
+    readonly probe: Effect.Effect<
+      ReturnType<typeof claudeUsageResponseToLimits>["limits"],
+      ClaudeActiveUsageProbeError
+    >;
+  },
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -559,7 +570,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
-  const usageLimits = !capabilities.usage
+  let usageLimits = !capabilities.usage
     ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
     : scopedLimitNames
       ? yield* recordClaudeUsageResponse(scopedLimitNames, {
@@ -567,6 +578,33 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt,
         })
       : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt }).limits;
+  if (
+    activeUsage &&
+    capabilities.usage &&
+    shouldRunClaudeActiveUsageProbe({
+      refreshUsageLimits: activeUsage.refreshUsageLimits,
+      capabilities: {
+        subscriptionType: capabilities.subscriptionType,
+        tokenSource: capabilities.tokenSource,
+        apiProvider: capabilities.apiProvider,
+        rateLimitsAvailable: capabilities.usage.rate_limits_available,
+        hasRateLimitWindows:
+          capabilities.usage.rate_limits !== null &&
+          capabilities.usage.rate_limits !== undefined &&
+          Object.keys(capabilities.usage.rate_limits).length > 0,
+      },
+      environment: resolvedEnvironment,
+    })
+  ) {
+    const activeResult = yield* activeUsage.probe.pipe(Effect.result);
+    usageLimits = Result.isSuccess(activeResult)
+      ? activeResult.success
+      : makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "probeFailed",
+          message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
+        });
+  }
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,

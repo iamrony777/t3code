@@ -7,7 +7,11 @@ import * as NodePath from "node:path";
 
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
 
-import { listTranscriptFiles, readTranscriptRecords } from "./usageTranscriptReader.ts";
+import {
+  formatDirectoryVolumeId,
+  listTranscriptFiles,
+  readTranscriptRecords,
+} from "./usageTranscriptReader.ts";
 
 let dir: string;
 
@@ -59,6 +63,15 @@ function codexUsageLine(outputTokens: number, secondsOffset: number): string {
     },
   })}\n`;
 }
+
+describe("formatDirectoryVolumeId", () => {
+  it("rejects a zero inode so callers fall back to the canonical path", () => {
+    assert.strictEqual(formatDirectoryVolumeId({ dev: 0, ino: 0 }), "");
+    assert.strictEqual(formatDirectoryVolumeId({ dev: 12, ino: -1 }), "");
+    assert.strictEqual(formatDirectoryVolumeId({ dev: 12, ino: Number.MAX_SAFE_INTEGER + 1 }), "");
+    assert.strictEqual(formatDirectoryVolumeId({ dev: 12, ino: 34 }), "12:34");
+  });
+});
 
 describe("readTranscriptRecords resume", () => {
   it("parses only appended lines when resuming a grown file", async () => {

@@ -8,21 +8,8 @@
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
 
-/**
- * Providers the scanner can read transcripts for.
- *
- * Wider than {@link UsageProviderKind}: Command Code transcripts are parsed and
- * cached like any other, but Command Code is not a *reported* provider, so its
- * buckets and sources are dropped before the summary crosses the wire. Keeping
- * the scan path on this union is what lets the parser stay in the build while
- * the contract stays claude/codex.
- */
-export type UsageScanProvider = UsageProviderKind | "commandcode";
-
-/** Whether a scanned provider is one the usage contract can carry. */
-export function isReportedProvider(provider: UsageScanProvider): provider is UsageProviderKind {
-  return provider !== "commandcode";
-}
+/** Providers whose on-disk transcripts this server can scan. */
+export type UsageScanProvider = UsageProviderKind;
 
 export interface UsageRecord {
   readonly provider: UsageScanProvider;

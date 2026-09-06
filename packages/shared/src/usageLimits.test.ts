@@ -14,6 +14,9 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
+  collectProviderAccountUsage,
+  accountUsageCreditSummary,
+  accountUsageUnavailableMessage,
   collectLimitNotices,
   collectLimitPools,
   collectLimitSources,
@@ -98,6 +101,51 @@ describe("limitsNotice", () => {
   });
 });
 
+describe("collectLimitNotices", () => {
+  it("keeps unsupported subscription and precise probe failure messages visible", () => {
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          entry: { target: { label: "Laptop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                instanceId: ProviderInstanceId.make("claude-api"),
+                driver: ProviderDriverKind.make("claudeAgent"),
+                displayName: "Claude API",
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:00:00.000Z",
+                  windows: [],
+                  unavailable: { reason: "unsupported" as const },
+                },
+              }),
+              provider({
+                instanceId: ProviderInstanceId.make("claude-subscription"),
+                driver: ProviderDriverKind.make("claudeAgent"),
+                displayName: "Claude Subscription",
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:00:00.000Z",
+                  windows: [],
+                  unavailable: {
+                    reason: "probeFailed" as const,
+                    message: "Authentication expired.",
+                  },
+                },
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+
+    expect(collectLimitNotices(input)).toEqual([
+      "Claude API: This account has no subscription limits.",
+      "Claude Subscription: Authentication expired.",
+    ]);
+  });
+});
+
 describe("providersWithLimits", () => {
   it("keeps only usable providers whose driver reports limits at all", () => {
     const limits = { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] };
@@ -152,6 +200,57 @@ describe("collectLimitsGroups", () => {
       "Laptop",
       "Desktop",
     ]);
+  });
+});
+
+describe("collectProviderAccountUsage", () => {
+  it("keeps partial account snapshots from usable providers with their environment", () => {
+    const commandCode = provider({
+      instanceId: ProviderInstanceId.make("commandcode"),
+      driver: ProviderDriverKind.make("commandcode"),
+      displayName: "Command Code Work",
+      accountUsage: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        plan: "Pro",
+        tokens: { total: 42_000 },
+      },
+    });
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          entry: { target: { label: "Laptop" } },
+          serverConfig: { providers: [commandCode, provider({})] },
+        },
+      ],
+    ]);
+
+    expect(collectProviderAccountUsage(input)).toEqual([
+      {
+        environmentId: "env-a",
+        environmentLabel: "Laptop",
+        provider: commandCode,
+      },
+    ]);
+  });
+});
+
+describe("account usage presentation", () => {
+  it("describes partial credit fields without inventing missing values", () => {
+    expect(accountUsageCreditSummary({ total: 120, purchased: 20 }, (value) => String(value))).toBe(
+      "120 total · 20 purchased",
+    );
+    expect(accountUsageCreditSummary({}, (value) => String(value))).toBeNull();
+  });
+
+  it("preserves precise probe failures and explains unsupported accounts", () => {
+    expect(accountUsageUnavailableMessage(undefined)).toBeNull();
+    expect(accountUsageUnavailableMessage({ reason: "unsupported" })).toBe(
+      "Account usage is not available for this account.",
+    );
+    expect(
+      accountUsageUnavailableMessage({ reason: "probeFailed", message: "Authentication expired." }),
+    ).toBe("Authentication expired.");
   });
 });
 
@@ -389,6 +488,165 @@ describe("pools", () => {
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
   });
 
+  it("deduplicates the same stable Command Code account across environments", () => {
+    const commandCode = provider({
+      driver: ProviderDriverKind.make("commandcode"),
+      instanceId: ProviderInstanceId.make("commandcode"),
+      auth: { status: "authenticated", label: "rony" },
+      accountUsage: {
+        checkedAt,
+        accountId: "https://api.commandcode.ai:user:user-123",
+        accountLabel: "rony",
+        plan: "Go",
+      },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [commandCode] } }],
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          serverConfig: {
+            providers: [
+              {
+                ...commandCode,
+                accountUsage: { ...commandCode.accountUsage!, plan: "Pro" },
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:30:00.000Z",
+                  windows: [{ ...window, usedPercent: 55 }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+
+    const accounts = collectLimitAccounts(input);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      key: "commandcode:account:https://api.commandcode.ai:user:user-123",
+      accountLabel: "rony",
+      plan: "Pro",
+      environments: [
+        { environmentId: "env-a", label: "Laptop" },
+        { environmentId: "env-b", label: "Desktop" },
+      ],
+      limits: { windows: [{ usedPercent: 55 }] },
+    });
+  });
+
+  it("keeps different Command Code accounts and API realms separate", () => {
+    const commandCode = (
+      accountId: string,
+      accountLabel: string,
+      instanceId: string,
+    ): ServerProvider =>
+      provider({
+        driver: ProviderDriverKind.make("commandcode"),
+        instanceId: ProviderInstanceId.make(instanceId),
+        auth: { status: "authenticated", label: accountLabel },
+        accountUsage: { checkedAt, accountId, accountLabel, plan: "Pro" },
+        usageLimits: { checkedAt, windows: [window] },
+      });
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          ...laptop,
+          serverConfig: {
+            providers: [
+              commandCode("https://api.commandcode.ai:user:user-123", "production", "production"),
+              commandCode("https://api.commandcode.ai:user:user-456", "other account", "other"),
+              commandCode("https://staging-api.commandcode.ai:user:user-123", "staging", "staging"),
+            ],
+          },
+        },
+      ],
+    ]);
+
+    expect(
+      collectLimitAccounts(input).map(({ key, accountLabel, plan }) => ({
+        key,
+        accountLabel,
+        plan,
+      })),
+    ).toEqual([
+      {
+        key: "commandcode:account:https://api.commandcode.ai:user:user-123",
+        accountLabel: "production",
+        plan: "Pro",
+      },
+      {
+        key: "commandcode:account:https://api.commandcode.ai:user:user-456",
+        accountLabel: "other account",
+        plan: "Pro",
+      },
+      {
+        key: "commandcode:account:https://staging-api.commandcode.ai:user:user-123",
+        accountLabel: "staging",
+        plan: "Pro",
+      },
+    ]);
+  });
+
+  it("preserves Claude and Codex auth labels when account usage is absent", () => {
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          ...laptop,
+          serverConfig: {
+            providers: [
+              provider({
+                driver: ProviderDriverKind.make("claudeAgent"),
+                instanceId: ProviderInstanceId.make("claude"),
+                auth: { status: "authenticated", label: "Claude Max" },
+                usageLimits: { checkedAt, windows: [window] },
+              }),
+              provider({
+                driver: ProviderDriverKind.make("codex"),
+                instanceId: ProviderInstanceId.make("codex"),
+                auth: { status: "authenticated", label: "Codex Pro" },
+                usageLimits: { checkedAt, windows: [window] },
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+
+    expect(
+      collectLimitAccounts(input).map(({ driver, accountLabel, plan }) => ({
+        driver,
+        accountLabel,
+        plan,
+      })),
+    ).toEqual([
+      { driver: "claudeAgent", accountLabel: undefined, plan: "Claude Max" },
+      { driver: "codex", accountLabel: undefined, plan: "Codex Pro" },
+    ]);
+  });
+
+  it("does not reinterpret an account label as a plan when account usage has no plan", () => {
+    const commandCode = provider({
+      driver: ProviderDriverKind.make("commandcode"),
+      instanceId: ProviderInstanceId.make("commandcode"),
+      auth: { status: "authenticated", label: "rony" },
+      accountUsage: { checkedAt, accountLabel: "rony" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [commandCode] } }],
+    ]);
+
+    expect(collectLimitAccounts(input)[0]).toMatchObject({
+      accountLabel: "rony",
+      plan: undefined,
+    });
+  });
+
   it("takes windows from a fresher hub read but credits and redeem from the native instance", () => {
     const native = provider({
       driver: claude,
@@ -601,6 +859,7 @@ describe("pools", () => {
           driver: claude,
           displayName: "Go",
           email: undefined,
+          accountLabel: undefined,
           plan: undefined,
           accentColor: undefined,
           environments: [],
@@ -646,7 +905,7 @@ describe("collectLimitNotices", () => {
     accounts: [],
   };
 
-  it("names failures and silence, skips unsupported accounts, and labels environments only when several", () => {
+  it("names failures, unsupported accounts, and silence, and labels environments only when several", () => {
     const failed = provider({
       instanceId: ProviderInstanceId.make("claude"),
       driver: claude,
@@ -676,6 +935,7 @@ describe("collectLimitNotices", () => {
     ]);
     expect(collectLimitNotices(one)).toEqual([
       "Claude Max: Could not read limits.",
+      "claudeAgent: This account has no subscription limits.",
       "codex: No limits reported.",
       "hub: No accounts reported.",
       "down: ECONNREFUSED",
@@ -753,6 +1013,23 @@ describe("/usage-limits", () => {
       plan: "Codex OSS",
     });
     expect(report?.notices).toEqual([]);
+  });
+
+  it("preserves native Claude and Codex plan labels without account usage", () => {
+    for (const [driver, plan] of [
+      ["claudeAgent", "Claude Max"],
+      ["codex", "Codex Pro"],
+    ] as const) {
+      const native = provider({
+        driver: ProviderDriverKind.make(driver),
+        instanceId: ProviderInstanceId.make(driver),
+        auth: { status: "authenticated", label: plan },
+        usageLimits: limits,
+      });
+      expect(
+        collectProviderUsageLimits(native.instanceId, [native], [], now)?.accounts[0]?.plan,
+      ).toBe(plan);
+    }
   });
 
   it("supports a source-only provider and keeps duplicates when the native probe failed", () => {

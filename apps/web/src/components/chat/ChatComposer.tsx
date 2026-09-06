@@ -1,3 +1,4 @@
+import { RefreshIcon } from "~/components/ui/refresh-icon";
 import type {
   ApprovalRequestId,
   AssistantCitation,
@@ -31,6 +32,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
+import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   Fragment,
   memo,
@@ -798,7 +800,6 @@ import {
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
-  RotateCcwIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react";
@@ -1202,6 +1203,8 @@ export interface ChatComposerProps {
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   bannerItems: readonly ComposerBannerStackItem[];
+  /** Picking /usage-limits from the menu is the action itself; the draft keeps nothing of it. */
+  onUsageLimitsCommand?: (() => void) | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -2761,6 +2764,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     };
   }, [readComposerSnapshot]);
 
+  const { onUsageLimitsCommand } = props;
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
       if (composerSelectLockRef.current) return;
@@ -2811,6 +2815,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (item.type === "provider-slash-command") {
+        if (item.command.name === USAGE_LIMITS_COMMAND.name && onUsageLimitsCommand) {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            onUsageLimitsCommand();
+          }
+          return;
+        }
         const replacement = `/${item.command.name} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
@@ -2851,6 +2866,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       applyPromptReplacement,
       handleInteractionModeChange,
       planModeUiEnabled,
+      onUsageLimitsCommand,
       resolveActiveComposerTrigger,
     ],
   );
@@ -5334,7 +5350,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                     />
                                   }
                                 >
-                                  <RotateCcwIcon />
+                                  <RefreshIcon />
                                 </TooltipTrigger>
                                 <TooltipPopup
                                   side="top"
@@ -5413,7 +5429,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                   />
                                 }
                               >
-                                <RotateCcwIcon />
+                                <RefreshIcon />
                               </TooltipTrigger>
                               <TooltipPopup
                                 side="top"
@@ -5486,7 +5502,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                   />
                                 }
                               >
-                                <RotateCcwIcon />
+                                <RefreshIcon />
                               </TooltipTrigger>
                               <TooltipPopup
                                 side="top"

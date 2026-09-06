@@ -213,6 +213,7 @@ import {
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import {
+  HostResourcesSnapshot,
   ResourceTelemetryHistory,
   ResourceTelemetryHistoryInput,
   ResourceTelemetryRetryResult,
@@ -328,6 +329,7 @@ export const WS_METHODS = {
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
+  serverGetHostResources: "server.getHostResources",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
@@ -556,6 +558,12 @@ const WsServerGetTraceDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetTraceDiagnos
 const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDiagnostics, {
   payload: Schema.Struct({}),
   success: ServerProcessDiagnosticsResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsServerGetHostResourcesRpc = Rpc.make(WS_METHODS.serverGetHostResources, {
+  payload: Schema.Struct({}),
+  success: HostResourcesSnapshot,
   error: EnvironmentAuthorizationError,
 });
 
@@ -1153,6 +1161,12 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
     environmentThemes: Schema.optional(Schema.Boolean),
     /** Whether this client understands `usageLimitSourcesUpdated` events. */
     usageLimitSources: Schema.optional(Schema.Boolean),
+    /**
+     * Whether this client answers `/usage-limits` itself. The server injects
+     * that command into provider catalogs only for such clients; an older
+     * client would send it to the provider as an ordinary prompt.
+     */
+    usageLimitsCommand: Schema.optional(Schema.Boolean),
   }),
   success: ServerConfigStreamEvent,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
@@ -1214,6 +1228,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
+  WsServerGetHostResourcesRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,

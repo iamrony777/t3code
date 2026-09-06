@@ -10,6 +10,10 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+// Fork: EAS builds ship OTA from the personal project by default; standalone
+// CI builds set T3CODE_DISABLE_OTA=1 so upstream's project can never take
+// over a self-hosted install.
+const otaEnabled = repoEnv.T3CODE_DISABLE_OTA !== "1";
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
@@ -180,9 +184,9 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: true,
+    enabled: otaEnabled,
     url: "https://u.expo.dev/cb45eba9-2cee-444c-94ce-a06ab557c6b9",
-    checkAutomatically: "ON_LOAD",
+    checkAutomatically: otaEnabled ? "ON_LOAD" : "NEVER",
     fallbackToCacheTimeout: 0,
   },
   ios: {

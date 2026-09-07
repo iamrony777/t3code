@@ -97,7 +97,13 @@ function isPaidClaudeSubscription(subscriptionType: string | undefined): boolean
 
 function isFirstPartyOAuthToken(tokenSource: string | undefined): boolean {
   const normalized = normalizedMetadata(tokenSource);
-  return normalized === undefined || normalized === "oauth" || normalized === "claudeai";
+  return (
+    normalized === undefined ||
+    normalized === "oauth" ||
+    normalized === "oauthtoken" ||
+    normalized === "claudeai" ||
+    normalized === "claudecodeoauthtoken"
+  );
 }
 
 export function isClaudeSubscriptionQuotaProfile(input: {
@@ -363,6 +369,48 @@ export function parseClaudeUsageTuiOutput(
   return windows.length > 0 ? makeUsageLimits({ checkedAt, windows }) : undefined;
 }
 
+function recordValue(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
+}
+
+const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+function statuslineReset(value: unknown): string | undefined {
+  if (typeof value === "number") {
+    return isoFromMillis(value < 1_000_000_000_000 ? value * 1_000 : value);
+  }
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric)
+    ? isoFromMillis(numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
+    : isoFromMillis(Date.parse(value));
+}
+
+export function parseClaudeStatuslineUsage(
+  input: string,
+  checkedAt: string,
+): ServerProviderUsageLimits | undefined {
+  const decoded = decodeUnknownJson(input);
+  if (Option.isNone(decoded)) return undefined;
+  const payload = decoded.value;
+  const rateLimits = recordValue(recordValue(payload)?.rate_limits);
+  const windowFrom = (id: "five_hour" | "seven_day") => {
+    const raw = recordValue(rateLimits?.[id]);
+    const usedPercent = raw?.used_percentage;
+    const resetsAt = statuslineReset(raw?.resets_at);
+    return typeof usedPercent === "number" && resetsAt
+      ? usageWindow(id, usedPercent, resetsAt)
+      : undefined;
+  };
+  const windows = [windowFrom("five_hour"), windowFrom("seven_day")];
+  return windows.every((window) => window !== undefined)
+    ? makeUsageLimits({ checkedAt, windows })
+    : undefined;
+}
+
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
 
@@ -443,14 +491,18 @@ export const resolveClaudeActiveUsageProbeLaunch = Effect.fn("resolveClaudeActiv
   },
 );
 
-function activeProbeArgs(mcpPath: string): ReadonlyArray<string> {
+function activeProbeArgs(
+  mcpPath: string,
+  settingsPath?: string,
+  safeMode = true,
+): ReadonlyArray<string> {
   return [
-    "--safe-mode",
+    ...(safeMode ? ["--safe-mode", "--restricted"] : []),
     "--ax-screen-reader",
-    "--restricted",
     "--strict-mcp-config",
     "--mcp-config",
     mcpPath,
+    ...(settingsPath ? ["--settings", settingsPath] : []),
     "--model",
     "haiku",
     "--tools",
@@ -461,6 +513,10 @@ function activeProbeArgs(mcpPath: string): ReadonlyArray<string> {
     "--prompt-suggestions",
     "false",
   ];
+}
+
+function posixShellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 const SANITIZED_PROBE_ENVIRONMENT_VARIABLES = new Set(
@@ -577,15 +633,28 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
         });
         yield* fileSystem.chmod(tempDirectory, 0o700);
         const mcpPath = path.join(tempDirectory, "mcp.json");
+        const settingsPath = path.join(tempDirectory, "settings.json");
+        const statuslineCapturePath = path.join(tempDirectory, "statusline.json");
         // @effect-diagnostics-next-line preferSchemaOverJson:off -- trusted internal MCP payload
         yield* fileSystem.writeFileString(mcpPath, JSON.stringify({ mcpServers: {} }));
         yield* fileSystem.chmod(mcpPath, 0o600);
+        // `--settings` applies only to this process, so the profile's statusline remains untouched.
+        yield* fileSystem.writeFileString(
+          settingsPath,
+          encodeUnknownJson({
+            statusLine: {
+              type: "command",
+              command: `cat > ${posixShellQuote(statuslineCapturePath)}`,
+            },
+          }),
+        );
+        yield* fileSystem.chmod(settingsPath, 0o600);
 
         const probeEnvironment = makeProbeEnvironment(input.environment, input.profileKey);
         const probeCwd = input.cwd ?? input.profileKey;
         const launch = yield* resolveClaudeActiveUsageProbeLaunch({
           executablePath: input.executablePath,
-          args: activeProbeArgs(mcpPath),
+          args: activeProbeArgs(mcpPath, settingsPath, false),
           environment: probeEnvironment,
         });
         const socketName = path.basename(tempDirectory);
@@ -640,24 +709,31 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
           const pongIndex = text.toLowerCase().lastIndexOf("pong");
           return pongIndex >= 0 && hasPrompt(text, pongIndex + 4);
         });
-        yield* sendLine("/usage");
-        const captured = yield* waitForCapture((text) => {
-          const limits = parseClaudeUsageTuiOutput(
-            text,
-            DateTime.formatIso(DateTime.makeUnsafe(now())),
+        const readStatusline = (): Effect.Effect<
+          ServerProviderUsageLimits,
+          ClaudeActiveUsageProbeError
+        > =>
+          fileSystem.readFileString(statuslineCapturePath).pipe(
+            Effect.option,
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  Effect.sleep(`${pollIntervalMs} millis`).pipe(Effect.andThen(readStatusline())),
+                onSome: (raw) => {
+                  const limits = parseClaudeStatuslineUsage(
+                    raw,
+                    DateTime.formatIso(DateTime.makeUnsafe(now())),
+                  );
+                  return limits
+                    ? Effect.succeed(limits)
+                    : Effect.sleep(`${pollIntervalMs} millis`).pipe(
+                        Effect.andThen(readStatusline()),
+                      );
+                },
+              }),
+            ),
           );
-          return limits?.windows.length === 2 &&
-            limits.windows.every((window) => window.resetsAt !== undefined)
-            ? limits
-            : undefined;
-        });
-        if (typeof captured === "string") {
-          return yield* new ClaudeActiveUsageProbeError({
-            reason: "invalidCapture",
-            message: "Claude usage tmux transport returned an invalid capture.",
-          });
-        }
-        return captured;
+        return yield* readStatusline();
       }),
     ).pipe(
       Effect.timeoutOption(timeoutMs),

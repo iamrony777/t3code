@@ -3364,7 +3364,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
           assert.deepStrictEqual(status.usageLimits?.unavailable, {
             reason: "probeFailed",
-            message: "Claude usage limits could not be refreshed after a safe-mode warmup turn.",
+            message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
           });
         }).pipe(
           Effect.provide(

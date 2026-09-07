@@ -9,6 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
@@ -18,6 +19,7 @@ import {
   type ClaudeUsageTmuxCommandInput,
   isClaudeSubscriptionQuotaProfile,
   makeClaudeActiveUsageProbe,
+  parseClaudeStatuslineUsage,
   parseClaudeUsageTuiOutput,
   resolveClaudeActiveUsageProbeLaunch,
   shouldRunClaudeActiveUsageProbe,
@@ -31,6 +33,8 @@ const subscriptionCapabilities = {
   hasRateLimitWindows: false,
 };
 
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
 describe("shouldRunClaudeActiveUsageProbe", () => {
   it("classifies only first-party OAuth subscriptions as quota profiles", () => {
     expect(
@@ -39,6 +43,14 @@ describe("shouldRunClaudeActiveUsageProbe", () => {
         environment: {},
       }),
     ).toBe(true);
+    for (const tokenSource of ["oauth_token", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+      expect(
+        isClaudeSubscriptionQuotaProfile({
+          capabilities: { ...subscriptionCapabilities, tokenSource },
+          environment: {},
+        }),
+      ).toBe(true);
+    }
     expect(
       isClaudeSubscriptionQuotaProfile({
         capabilities: { ...subscriptionCapabilities, tokenSource: "api-key" },
@@ -338,6 +350,53 @@ describe("parseClaudeUsageTuiOutput", () => {
   });
 });
 
+describe("parseClaudeStatuslineUsage", () => {
+  it("maps subscription windows from statusline JSON", () => {
+    expect(
+      parseClaudeStatuslineUsage(
+        JSON.stringify({
+          rate_limits: {
+            five_hour: { used_percentage: 13, resets_at: 1_800_003_600 },
+            seven_day: { used_percentage: 35.5, resets_at: "2027-01-22T08:00:00Z" },
+          },
+        }),
+        "2027-01-15T08:00:00.000Z",
+      ),
+    ).toEqual({
+      checkedAt: "2027-01-15T08:00:00.000Z",
+      windows: [
+        {
+          id: "five_hour",
+          kind: "session",
+          label: "Session",
+          windowDurationMins: 300,
+          usedPercent: 13,
+          resetsAt: "2027-01-15T09:00:00.000Z",
+        },
+        {
+          id: "seven_day",
+          kind: "weekly",
+          label: "Weekly",
+          windowDurationMins: 10_080,
+          usedPercent: 35.5,
+          resetsAt: "2027-01-22T08:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("rejects missing, malformed, and incomplete statusline windows", () => {
+    for (const input of [
+      "not json",
+      "{}",
+      '{"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":1800003600}}}',
+      '{"rate_limits":{"five_hour":{"used_percentage":101,"resets_at":1800003600},"seven_day":{"used_percentage":20,"resets_at":1800604800}}}',
+    ]) {
+      expect(parseClaudeStatuslineUsage(input, "2027-01-15T08:00:00.000Z")).toBeUndefined();
+    }
+  });
+});
+
 describe("resolveClaudeActiveUsageProbeLaunch", () => {
   it.effect("runs a Windows cli.js entry through the host runtime", () =>
     Effect.gen(function* () {
@@ -522,6 +581,7 @@ it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
   it.effect("uses the original profile through tmux and drives the TUI through pane commands", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const profileDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-profile-" });
       yield* fs.writeFileString(
         `${profileDir}/settings.json`,
@@ -533,16 +593,8 @@ it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
       const captures = [
         "Claude Code v2.1.263\n$ ",
         "you: ping (reply with pong)\nclaude: pong\n$ ",
-        [
-          "you: /usage",
-          "Current session",
-          "9% 9% used",
-          "Resets 2026-09-07T15:00:00Z",
-          "Current week (all models)",
-          "35% 35% used",
-          "Resets 2026-09-08T04:30:00Z",
-        ].join("\n"),
       ];
+      let statuslineCapturePath: string | undefined;
       const fake = yield* makeFakePty();
       const probe = yield* makeClaudeActiveUsageProbe({
         cooldownMs: 0,
@@ -550,8 +602,32 @@ it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
         pollIntervalMs: 0,
         fallbackToPty: false,
         runTmuxCommand: (input: ClaudeUsageTmuxCommandInput) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             commands.push(input);
+            if (input.args.includes("new-session")) {
+              const settingsIndex = input.args.indexOf("--settings");
+              const settingsPath = input.args[settingsIndex + 1];
+              if (settingsIndex >= 0 && settingsPath) {
+                statuslineCapturePath = path.join(path.dirname(settingsPath), "statusline.json");
+              }
+            }
+            if (
+              statuslineCapturePath &&
+              input.args.includes("send-keys") &&
+              input.args.at(-1) === "Enter"
+            ) {
+              yield* fs
+                .writeFileString(
+                  statuslineCapturePath,
+                  encodeUnknownJson({
+                    rate_limits: {
+                      five_hour: { used_percentage: 9, resets_at: 1_788_777_000 },
+                      seven_day: { used_percentage: 35, resets_at: 1_788_825_000 },
+                    },
+                  }),
+                )
+                .pipe(Effect.orDie);
+            }
             return input.args.includes("capture-pane") ? (captures[captureCount++] ?? "") : "";
           }),
       }).pipe(Effect.provideService(PtyAdapter.PtyAdapter, fake.service));
@@ -572,14 +648,15 @@ it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
       expect(start?.cwd).toBe("/work/t3code");
       expect(start?.environment.CLAUDE_CONFIG_DIR).toBe(profileDir);
       expect(start?.environment.ANTHROPIC_API_KEY).toBeUndefined();
-      expect(start?.args).toContain("--safe-mode");
+      expect(start?.args).not.toContain("--safe-mode");
+      expect(start?.args).not.toContain("--restricted");
       expect(start?.args).toContain("--strict-mcp-config");
       expect(start?.args).toContain("--tools");
       expect(
         commands
           .filter((command) => command.args.includes("send-keys"))
           .map((command) => command.args.at(-1)),
-      ).toEqual(["ping (reply with pong)", "Enter", "/usage", "Enter"]);
+      ).toEqual(["ping (reply with pong)", "Enter"]);
       expect(commands.some((command) => command.args.includes("kill-server"))).toBe(true);
       expect(fake.spawnInputs).toHaveLength(0);
       expect(limits.windows.map(({ id, usedPercent }) => ({ id, usedPercent }))).toEqual([

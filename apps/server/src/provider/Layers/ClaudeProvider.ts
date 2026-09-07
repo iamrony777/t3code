@@ -618,7 +618,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       usageLimits = makeUnavailableUsageLimits({
         checkedAt,
         reason: "probeFailed",
-        message: "Claude usage limits could not be refreshed after a safe-mode warmup turn.",
+        message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
       });
     }
   }

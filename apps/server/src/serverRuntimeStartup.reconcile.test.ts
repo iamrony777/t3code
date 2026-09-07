@@ -172,9 +172,16 @@ it.effect("marks active running sessions that have persisted resume state", () =
   );
 });
 
-it.effect.each(["marked update", "opt-in restart"] as const)(
-  "continues %s sessions after activation with provider-specific input",
-  (recovery) =>
+it.effect.each(
+  (["marked update", "opt-in restart"] as const).flatMap((recovery) =>
+    (["current", "previous", "missing"] as const).map((persistedTurn) => ({
+      recovery,
+      persistedTurn,
+    })),
+  ),
+)(
+  "continues $recovery sessions with a $persistedTurn directory turn",
+  ({ recovery, persistedTurn }) =>
     Effect.gen(function* () {
       const codex = makeThread(
         "thread-continue-codex",
@@ -206,15 +213,22 @@ it.effect.each(["marked update", "opt-in restart"] as const)(
               thread.id === codex.id ? providerInstanceId : fallbackProviderInstanceId,
             status: "running" as const,
             resumeCursor: { threadId: thread.id },
-            runtimePayload:
-              recovery === "marked update"
+            runtimePayload: {
+              activeTurnId:
+                thread.id === codex.id && persistedTurn !== "current"
+                  ? persistedTurn === "previous"
+                    ? "previous-provider-turn"
+                    : null
+                  : thread.session.activeTurnId,
+              ...(recovery === "marked update"
                 ? {
                     continueAfterServerUpdate:
                       thread.id === codex.id
                         ? codex.session.activeTurnId
                         : fallbackContinuationTurnId,
                   }
-                : { activeTurnId: thread.session.activeTurnId },
+                : {}),
+            },
           },
         ]),
       );
@@ -281,6 +295,12 @@ it.effect.each(["marked update", "opt-in restart"] as const)(
             Effect.as({ sequence: dispatched.length }),
           ),
       });
+      assert.isTrue(
+        dispatched.every(
+          (command) =>
+            command.type === "thread.session.set" && command.session.status === "starting",
+        ),
+      );
       yield* Deferred.await(continuationSent);
       yield* Deferred.await(continuationCleared);
 
@@ -728,9 +748,7 @@ for (const scenario of [
   "stopped projection",
   "finished projection",
   "stopped binding",
-  "finished binding",
   "missing cursor",
-  "mismatched turn",
   "marked without cursor",
   "marked stopped projection",
   "marked superseded turn",
@@ -763,12 +781,7 @@ for (const scenario of [
               status: scenario === "stopped binding" ? "stopped" : "running",
               ...(scenario.includes("cursor") ? {} : { resumeCursor: { threadId: thread.id } }),
               runtimePayload: {
-                activeTurnId:
-                  scenario === "finished binding"
-                    ? null
-                    : scenario === "mismatched turn" || scenario === "marked superseded turn"
-                      ? "another-turn"
-                      : turnId,
+                activeTurnId: scenario === "marked superseded turn" ? "another-turn" : turnId,
                 ...(scenario.startsWith("marked") ? { continueAfterServerUpdate: turnId } : {}),
               },
               lastSeenAt: updatedAt,

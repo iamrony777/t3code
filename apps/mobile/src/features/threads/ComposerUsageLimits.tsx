@@ -42,6 +42,9 @@ export function ComposerUsageLimits({
       >
         {report.accounts.map((account, index) => {
           const presentation = presentComposerUsageAccount(account);
+          const resetCreditInput =
+            account.resetCreditInput ??
+            (account.instanceId ? { instanceId: account.instanceId } : undefined);
           return (
             <AccountLimits
               key={account.id}
@@ -57,11 +60,11 @@ export function ComposerUsageLimits({
               now={now}
               trailing={index === 0 ? close : undefined}
               footer={
-                account.instanceId && account.limits.resetCredits ? (
+                resetCreditInput && account.limits.resetCredits ? (
                   <ResetCredits
                     dense
                     environmentId={environmentId}
-                    instanceId={account.instanceId}
+                    input={resetCreditInput}
                     credits={account.limits.resetCredits}
                     now={now}
                   />

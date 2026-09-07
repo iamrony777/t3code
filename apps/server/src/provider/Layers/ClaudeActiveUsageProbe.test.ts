@@ -65,6 +65,19 @@ describe("shouldRunClaudeActiveUsageProbe", () => {
     ).toBe(false);
   });
 
+  it("classifies a first-party setup token as quota-eligible when Claude omits the plan", () => {
+    expect(
+      isClaudeSubscriptionQuotaProfile({
+        capabilities: {
+          ...subscriptionCapabilities,
+          subscriptionType: undefined,
+          tokenSource: "CLAUDE_CODE_OAUTH_TOKEN",
+        },
+        environment: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      }),
+    ).toBe(true);
+  });
+
   it("requires an explicit manual limits refresh", () => {
     expect(
       shouldRunClaudeActiveUsageProbe({

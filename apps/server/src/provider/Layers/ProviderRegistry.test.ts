@@ -3191,18 +3191,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
-      it.effect("uses the active limits fallback only for an explicit eligible refresh", () =>
+      it.effect("uses the active limits fallback for a setup token whose plan is omitted", () =>
         Effect.gen(function* () {
           let activeCalls = 0;
           const status = yield* checkClaudeProviderStatus(
             defaultClaudeSettings,
             claudeCapabilities({
-              subscriptionType: "pro",
-              tokenSource: "oauth",
+              subscriptionType: undefined,
+              tokenSource: "CLAUDE_CODE_OAUTH_TOKEN",
               apiProvider: "firstParty",
               usage: { rate_limits_available: true, rate_limits: null },
             }),
-            {},
+            { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
             undefined,
             undefined,
             undefined,

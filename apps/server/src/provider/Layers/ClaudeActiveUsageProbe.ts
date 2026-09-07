@@ -111,9 +111,12 @@ export function isClaudeSubscriptionQuotaProfile(input: {
   readonly environment: NodeJS.ProcessEnv;
 }): boolean {
   const { capabilities, environment } = input;
+  const hasSetupTokenWithoutPlan =
+    normalizedMetadata(capabilities.subscriptionType) === undefined &&
+    hasEnvironmentValue(environment, "CLAUDE_CODE_OAUTH_TOKEN");
   return (
     capabilities.apiProvider === "firstParty" &&
-    isPaidClaudeSubscription(capabilities.subscriptionType) &&
+    (isPaidClaudeSubscription(capabilities.subscriptionType) || hasSetupTokenWithoutPlan) &&
     isFirstPartyOAuthToken(capabilities.tokenSource) &&
     !API_BILLING_ENVIRONMENT_VARIABLES.some((name) => hasEnvironmentValue(environment, name))
   );

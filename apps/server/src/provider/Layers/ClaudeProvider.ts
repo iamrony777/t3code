@@ -605,7 +605,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         }).limits;
   if (
     activeUsage &&
-    capabilities.usage &&
     shouldRunClaudeActiveUsageProbe({
       refreshUsageLimits: activeUsage.refreshUsageLimits,
       capabilities: activeProbeCapabilities,
@@ -613,13 +612,15 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     })
   ) {
     const activeResult = yield* activeUsage.probe.pipe(Effect.result);
-    usageLimits = Result.isSuccess(activeResult)
-      ? activeResult.success
-      : makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "probeFailed",
-          message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
-        });
+    if (Result.isSuccess(activeResult)) {
+      usageLimits = activeResult.success;
+    } else if (usageLimits.unavailable) {
+      usageLimits = makeUnavailableUsageLimits({
+        checkedAt,
+        reason: "probeFailed",
+        message: "Claude usage limits could not be refreshed after a safe-mode warmup turn.",
+      });
+    }
   }
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,

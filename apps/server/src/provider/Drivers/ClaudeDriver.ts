@@ -296,6 +296,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                           cooldownKey,
                           executablePath: activeProbeExecutablePath,
                           environment: activeProbeEnvironment,
+                          cwd,
                         }),
                       ),
                     ),

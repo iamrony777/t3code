@@ -3241,6 +3241,58 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
+      it.effect("prefers the active refresh and retains passive windows when it fails", () =>
+        Effect.gen(function* () {
+          let activeCalls = 0;
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              subscriptionType: "pro",
+              tokenSource: "oauth",
+              apiProvider: "firstParty",
+              usage: {
+                rate_limits_available: true,
+                rate_limits: {
+                  five_hour: {
+                    utilization: 22,
+                    resets_at: "2027-01-15T09:00:00.000Z",
+                  },
+                },
+              },
+            }),
+            {},
+            undefined,
+            undefined,
+            undefined,
+            {
+              refreshUsageLimits: true,
+              probe: Effect.suspend(() => {
+                activeCalls += 1;
+                return Effect.fail(
+                  new ClaudeActiveUsageProbeError({
+                    reason: "timedOut",
+                    message: "tmux capture timed out",
+                  }),
+                );
+              }),
+            },
+          );
+
+          assert.strictEqual(activeCalls, 1);
+          assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 22);
+          assert.strictEqual(status.usageLimits?.unavailable, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("never uses the active limits fallback for API billing or a passive refresh", () =>
         Effect.gen(function* () {
           let activeCalls = 0;
@@ -3312,7 +3364,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
           assert.deepStrictEqual(status.usageLimits?.unavailable, {
             reason: "probeFailed",
-            message: "Claude usage limits could not be refreshed after an isolated warmup turn.",
+            message: "Claude usage limits could not be refreshed after a safe-mode warmup turn.",
           });
         }).pipe(
           Effect.provide(

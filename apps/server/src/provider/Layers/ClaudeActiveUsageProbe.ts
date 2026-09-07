@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
+
 import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
 import { HostProcessExecutablePath, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -117,10 +120,7 @@ export function shouldRunClaudeActiveUsageProbe(input: {
 }): boolean {
   const { capabilities, environment } = input;
   return (
-    input.refreshUsageLimits &&
-    capabilities.rateLimitsAvailable &&
-    !capabilities.hasRateLimitWindows &&
-    isClaudeSubscriptionQuotaProfile({ capabilities, environment })
+    input.refreshUsageLimits && isClaudeSubscriptionQuotaProfile({ capabilities, environment })
   );
 }
 
@@ -307,10 +307,10 @@ function parseAbsoluteReset(resetText: string, nowMs: number): string | undefine
     return candidate === undefined ? undefined : isoFromMillis(candidate);
   }
 
-  const clock = /\b(\d{1,2})(?::(\d{2}))\s*(am|pm)\b/i.exec(resetText);
+  const clock = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(resetText);
   if (!clock) return undefined;
   const hour = clockHour(Number(clock[1]), clock[3]);
-  const minute = Number(clock[2]);
+  const minute = Number(clock[2] ?? 0);
   if (hour === undefined || minute > 59) return undefined;
 
   const weekDayMatch = /\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/i.exec(resetText);
@@ -380,7 +380,18 @@ export interface ClaudeActiveUsageProbeInput {
   readonly cooldownKey: string;
   readonly executablePath: string;
   readonly environment: NodeJS.ProcessEnv;
+  readonly cwd?: string;
 }
+
+export interface ClaudeUsageTmuxCommandInput {
+  readonly args: ReadonlyArray<string>;
+  readonly cwd: string;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+type ClaudeUsageTmuxCommandRunner = (
+  input: ClaudeUsageTmuxCommandInput,
+) => Effect.Effect<string, ClaudeActiveUsageProbeError>;
 
 export interface ClaudeActiveUsageProbeShape {
   readonly probe: (
@@ -468,7 +479,7 @@ const SANITIZED_PROBE_ENVIRONMENT_VARIABLES = new Set(
 
 function makeProbeEnvironment(
   environment: NodeJS.ProcessEnv,
-  isolatedConfigDirectory: string,
+  configDirectory: string,
 ): NodeJS.ProcessEnv {
   const sanitized: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(environment)) {
@@ -476,7 +487,7 @@ function makeProbeEnvironment(
   }
   return {
     ...sanitized,
-    CLAUDE_CONFIG_DIR: isolatedConfigDirectory,
+    CLAUDE_CONFIG_DIR: configDirectory,
     ENABLE_CLAUDEAI_MCP_SERVERS: "false",
     CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -485,11 +496,45 @@ function makeProbeEnvironment(
   };
 }
 
+const runTmuxCommandLive: ClaudeUsageTmuxCommandRunner = (input) =>
+  Effect.callback<string, ClaudeActiveUsageProbeError>((resume) => {
+    const child = NodeChildProcess.execFile(
+      "tmux",
+      [...input.args],
+      {
+        cwd: input.cwd,
+        env: input.environment,
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 256 * 1024,
+      },
+      (error, stdout) => {
+        resume(
+          error
+            ? Effect.fail(
+                new ClaudeActiveUsageProbeError({
+                  reason: "spawnFailed",
+                  message: "Claude usage tmux command failed.",
+                  cause: error,
+                }),
+              )
+            : Effect.succeed(stdout),
+        );
+      },
+    );
+    return Effect.sync(() => {
+      if (!child.killed) child.kill();
+    });
+  });
+
 export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe")(function* (
   options: {
     readonly timeoutMs?: number;
     readonly cooldownMs?: number;
+    readonly pollIntervalMs?: number;
     readonly now?: () => number;
+    readonly runTmuxCommand?: ClaudeUsageTmuxCommandRunner;
+    readonly fallbackToPty?: boolean;
   } = {},
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -499,6 +544,7 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
   const recentRef = yield* Ref.make<ReadonlyMap<string, CachedProbeResult>>(new Map());
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? 100;
   const now = options.now ?? Date.now;
 
   const semaphoreFor = Effect.fn("ClaudeActiveUsageProbe.semaphoreFor")(function* (
@@ -514,7 +560,132 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
     });
   });
 
-  const execute = Effect.fn("ClaudeActiveUsageProbe.execute")(function* (
+  const executeTmux = Effect.fn("ClaudeActiveUsageProbe.executeTmux")(function* (
+    input: ClaudeActiveUsageProbeInput,
+  ): Effect.fn.Return<ServerProviderUsageLimits, ClaudeActiveUsageProbeError, never> {
+    const runTmuxCommand = options.runTmuxCommand;
+    if (runTmuxCommand === undefined) {
+      return yield* new ClaudeActiveUsageProbeError({
+        reason: "spawnFailed",
+        message: "Claude usage tmux transport is unavailable.",
+      });
+    }
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-usage-tmux-",
+        });
+        yield* fileSystem.chmod(tempDirectory, 0o700);
+        const mcpPath = path.join(tempDirectory, "mcp.json");
+        // @effect-diagnostics-next-line preferSchemaOverJson:off -- trusted internal MCP payload
+        yield* fileSystem.writeFileString(mcpPath, JSON.stringify({ mcpServers: {} }));
+        yield* fileSystem.chmod(mcpPath, 0o600);
+
+        const probeEnvironment = makeProbeEnvironment(input.environment, input.profileKey);
+        const probeCwd = input.cwd ?? input.profileKey;
+        const launch = yield* resolveClaudeActiveUsageProbeLaunch({
+          executablePath: input.executablePath,
+          args: activeProbeArgs(mcpPath),
+          environment: probeEnvironment,
+        });
+        const socketName = path.basename(tempDirectory);
+        const sessionName = "usage";
+        const target = `${sessionName}:0.0`;
+        const run = (args: ReadonlyArray<string>) =>
+          runTmuxCommand({ args, cwd: probeCwd, environment: probeEnvironment });
+
+        yield* Effect.addFinalizer(() =>
+          run(["-L", socketName, "kill-server"]).pipe(Effect.ignore),
+        );
+        yield* run([
+          "-L",
+          socketName,
+          "new-session",
+          "-d",
+          "-s",
+          sessionName,
+          "-c",
+          probeCwd,
+          launch.shell,
+          ...launch.args,
+        ]);
+
+        const capture = () =>
+          run(["-L", socketName, "capture-pane", "-p", "-J", "-S", "-200", "-t", target]);
+        const waitForCapture = (
+          accept: (text: string) => ServerProviderUsageLimits | boolean | undefined,
+        ): Effect.Effect<ServerProviderUsageLimits | string, ClaudeActiveUsageProbeError> =>
+          Effect.suspend(() =>
+            capture().pipe(
+              Effect.flatMap((raw) => {
+                const text = flatTerminalText(raw);
+                const accepted = accept(text);
+                if (typeof accepted === "object") return Effect.succeed(accepted);
+                if (accepted) return Effect.succeed(text);
+                return Effect.sleep(`${pollIntervalMs} millis`).pipe(
+                  Effect.andThen(waitForCapture(accept)),
+                );
+              }),
+            ),
+          );
+        const hasPrompt = (text: string, after = 0) => /(?:^|\n)[>$❯]\s*$/m.test(text.slice(after));
+        const sendLine = (line: string) =>
+          run(["-L", socketName, "send-keys", "-t", target, "-l", line]).pipe(
+            Effect.andThen(run(["-L", socketName, "send-keys", "-t", target, "Enter"])),
+          );
+
+        yield* waitForCapture((text) => hasPrompt(text));
+        yield* sendLine("ping (reply with pong)");
+        yield* waitForCapture((text) => {
+          const pongIndex = text.toLowerCase().lastIndexOf("pong");
+          return pongIndex >= 0 && hasPrompt(text, pongIndex + 4);
+        });
+        yield* sendLine("/usage");
+        const captured = yield* waitForCapture((text) => {
+          const limits = parseClaudeUsageTuiOutput(
+            text,
+            DateTime.formatIso(DateTime.makeUnsafe(now())),
+          );
+          return limits?.windows.length === 2 &&
+            limits.windows.every((window) => window.resetsAt !== undefined)
+            ? limits
+            : undefined;
+        });
+        if (typeof captured === "string") {
+          return yield* new ClaudeActiveUsageProbeError({
+            reason: "invalidCapture",
+            message: "Claude usage tmux transport returned an invalid capture.",
+          });
+        }
+        return captured;
+      }),
+    ).pipe(
+      Effect.timeoutOption(timeoutMs),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            new ClaudeActiveUsageProbeError({
+              reason: "timedOut",
+              message: "Claude usage tmux probe timed out before reporting limits.",
+            }),
+          onSome: Effect.succeed,
+        }),
+      ),
+      Effect.catch((cause) =>
+        isClaudeActiveUsageProbeError(cause)
+          ? Effect.fail(cause)
+          : Effect.fail(
+              new ClaudeActiveUsageProbeError({
+                reason: "spawnFailed",
+                message: "Claude usage tmux probe could not start or capture its session.",
+                cause,
+              }),
+            ),
+      ),
+    );
+  });
+
+  const executePty = Effect.fn("ClaudeActiveUsageProbe.executePty")(function* (
     input: ClaudeActiveUsageProbeInput,
   ): Effect.fn.Return<ServerProviderUsageLimits, ClaudeActiveUsageProbeError, never> {
     return yield* Effect.scoped(
@@ -680,6 +851,13 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
     );
   });
 
+  const execute = (input: ClaudeActiveUsageProbeInput) =>
+    options.runTmuxCommand === undefined
+      ? executePty(input)
+      : options.fallbackToPty === false
+        ? executeTmux(input)
+        : executeTmux(input).pipe(Effect.catch(() => executePty(input)));
+
   const probe = Effect.fn("ClaudeActiveUsageProbe.probe")(function* (
     input: ClaudeActiveUsageProbeInput,
   ) {
@@ -710,5 +888,5 @@ export const makeClaudeActiveUsageProbe = Effect.fn("makeClaudeActiveUsageProbe"
 
 export const ClaudeActiveUsageProbeLayer = Layer.effect(
   ClaudeActiveUsageProbe,
-  makeClaudeActiveUsageProbe(),
+  makeClaudeActiveUsageProbe({ runTmuxCommand: runTmuxCommandLive, fallbackToPty: false }),
 );

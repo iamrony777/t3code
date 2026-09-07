@@ -15,6 +15,7 @@ import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
 import * as NodePtyAdapter from "../../terminal/NodePtyAdapter.ts";
 
 import {
+  type ClaudeUsageTmuxCommandInput,
   isClaudeSubscriptionQuotaProfile,
   makeClaudeActiveUsageProbe,
   parseClaudeUsageTuiOutput,
@@ -91,6 +92,24 @@ describe("shouldRunClaudeActiveUsageProbe", () => {
         environment: {},
       }),
     ).toBe(true);
+    expect(
+      shouldRunClaudeActiveUsageProbe({
+        refreshUsageLimits: true,
+        capabilities: {
+          ...subscriptionCapabilities,
+          rateLimitsAvailable: false,
+          hasRateLimitWindows: false,
+        },
+        environment: {},
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunClaudeActiveUsageProbe({
+        refreshUsageLimits: true,
+        capabilities: { ...subscriptionCapabilities, hasRateLimitWindows: true },
+        environment: {},
+      }),
+    ).toBe(true);
   });
 
   it("rejects free, API-token, third-party, custom-base, and already-populated probes", () => {
@@ -110,11 +129,6 @@ describe("shouldRunClaudeActiveUsageProbe", () => {
         environment: {},
       },
       { capabilities: { ...subscriptionCapabilities, apiProvider: "bedrock" }, environment: {} },
-      {
-        capabilities: { ...subscriptionCapabilities, rateLimitsAvailable: false },
-        environment: {},
-      },
-      { capabilities: { ...subscriptionCapabilities, hasRateLimitWindows: true }, environment: {} },
       { capabilities: subscriptionCapabilities, environment: { ANTHROPIC_API_KEY: "secret" } },
       { capabilities: subscriptionCapabilities, environment: { anthropic_Api_Key: "secret" } },
       { capabilities: subscriptionCapabilities, environment: { AnThRoPiC_aUtH_tOkEn: "secret" } },
@@ -228,6 +242,25 @@ describe("parseClaudeUsageTuiOutput", () => {
     ).toEqual([
       { id: "five_hour", usedPercent: 0, resetsAt: "2026-09-06T17:39:00.000Z" },
       { id: "seven_day", usedPercent: 9, resetsAt: "2026-09-07T22:59:00.000Z" },
+    ]);
+  });
+
+  it("parses an hour-only reset clock from the current TUI", () => {
+    expect(
+      parseClaudeUsageTuiOutput(
+        [
+          "Current session",
+          "9% 9% used",
+          "Resets 7pm (Asia/Kolkata)",
+          "Current week (all models)",
+          "35% 35% used",
+          "Resets Sep 8, 4:30am (Asia/Kolkata)",
+        ].join("\n"),
+        "2026-09-07T09:30:00.000Z",
+      )?.windows.map(({ id, usedPercent, resetsAt }) => ({ id, usedPercent, resetsAt })),
+    ).toEqual([
+      { id: "five_hour", usedPercent: 9, resetsAt: "2026-09-07T13:30:00.000Z" },
+      { id: "seven_day", usedPercent: 35, resetsAt: "2026-09-07T23:00:00.000Z" },
     ]);
   });
 
@@ -486,6 +519,80 @@ const makeFakePty = Effect.fn("ClaudeActiveUsageProbe.test.makeFakePty")(functio
 });
 
 it.layer(NodeServices.layer)("Claude active usage PTY probe", (it) => {
+  it.effect("uses the original profile through tmux and drives the TUI through pane commands", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const profileDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-profile-" });
+      yield* fs.writeFileString(
+        `${profileDir}/settings.json`,
+        '{"statusLine":{"command":"user-owned"}}',
+      );
+      const originalEntries = (yield* fs.readDirectory(profileDir)).toSorted();
+      const commands: ClaudeUsageTmuxCommandInput[] = [];
+      let captureCount = 0;
+      const captures = [
+        "Claude Code v2.1.263\n$ ",
+        "you: ping (reply with pong)\nclaude: pong\n$ ",
+        [
+          "you: /usage",
+          "Current session",
+          "9% 9% used",
+          "Resets 2026-09-07T15:00:00Z",
+          "Current week (all models)",
+          "35% 35% used",
+          "Resets 2026-09-08T04:30:00Z",
+        ].join("\n"),
+      ];
+      const fake = yield* makeFakePty();
+      const probe = yield* makeClaudeActiveUsageProbe({
+        cooldownMs: 0,
+        timeoutMs: 1_000,
+        pollIntervalMs: 0,
+        fallbackToPty: false,
+        runTmuxCommand: (input: ClaudeUsageTmuxCommandInput) =>
+          Effect.sync(() => {
+            commands.push(input);
+            return input.args.includes("capture-pane") ? (captures[captureCount++] ?? "") : "";
+          }),
+      }).pipe(Effect.provideService(PtyAdapter.PtyAdapter, fake.service));
+
+      const limits = yield* probe.probe({
+        profileKey: profileDir,
+        cooldownKey: "claude-work:auth-a",
+        executablePath: "/usr/bin/claude",
+        environment: {
+          CLAUDE_CONFIG_DIR: profileDir,
+          ANTHROPIC_API_KEY: "must-not-reach-child",
+          PATH: "/usr/bin",
+        },
+        cwd: "/work/t3code",
+      });
+
+      const start = commands.find((command) => command.args.includes("new-session"));
+      expect(start?.cwd).toBe("/work/t3code");
+      expect(start?.environment.CLAUDE_CONFIG_DIR).toBe(profileDir);
+      expect(start?.environment.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(start?.args).toContain("--safe-mode");
+      expect(start?.args).toContain("--strict-mcp-config");
+      expect(start?.args).toContain("--tools");
+      expect(
+        commands
+          .filter((command) => command.args.includes("send-keys"))
+          .map((command) => command.args.at(-1)),
+      ).toEqual(["ping (reply with pong)", "Enter", "/usage", "Enter"]);
+      expect(commands.some((command) => command.args.includes("kill-server"))).toBe(true);
+      expect(fake.spawnInputs).toHaveLength(0);
+      expect(limits.windows.map(({ id, usedPercent }) => ({ id, usedPercent }))).toEqual([
+        { id: "five_hour", usedPercent: 9 },
+        { id: "seven_day", usedPercent: 35 },
+      ]);
+      expect((yield* fs.readDirectory(profileDir)).toSorted()).toEqual(originalEntries);
+      expect(yield* fs.readFileString(`${profileDir}/settings.json`)).toBe(
+        '{"statusLine":{"command":"user-owned"}}',
+      );
+    }),
+  );
+
   it.effect(
     "isolates the TUI, sends one exact prompt after readiness, captures limits, and cleans up",
     () =>

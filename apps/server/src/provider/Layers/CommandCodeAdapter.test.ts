@@ -385,6 +385,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
             COMMAND_CODE_STDIN_LOG: stdinLog,
           },
         });
+        expect(adapter.compaction).toEqual({ type: "slash-command", command: "/compact" });
         const threadId = ThreadId.make("thread-command-code-compact");
         const completionFiber = yield* adapter.streamEvents.pipe(
           Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),

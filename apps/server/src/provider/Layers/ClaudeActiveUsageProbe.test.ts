@@ -78,6 +78,20 @@ describe("shouldRunClaudeActiveUsageProbe", () => {
     ).toBe(true);
   });
 
+  it("does not start an active limits probe for an inference-only setup token", () => {
+    expect(
+      shouldRunClaudeActiveUsageProbe({
+        refreshUsageLimits: true,
+        capabilities: {
+          ...subscriptionCapabilities,
+          subscriptionType: undefined,
+          tokenSource: "CLAUDE_CODE_OAUTH_TOKEN",
+        },
+        environment: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      }),
+    ).toBe(false);
+  });
+
   it("requires an explicit manual limits refresh", () => {
     expect(
       shouldRunClaudeActiveUsageProbe({

@@ -3191,7 +3191,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
-      it.effect("uses the active limits fallback for a setup token whose plan is omitted", () =>
+      it.effect("explains that setup tokens cannot report subscription limits", () =>
         Effect.gen(function* () {
           let activeCalls = 0;
           const status = yield* checkClaudeProviderStatus(
@@ -3227,8 +3227,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
           );
 
-          assert.strictEqual(activeCalls, 1);
-          assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 14);
+          assert.strictEqual(activeCalls, 0);
+          assert.deepStrictEqual(status.usageLimits?.windows, []);
+          assert.strictEqual(
+            status.usageLimits?.unavailable?.message,
+            "Claude does not expose subscription limits to long-lived OAuth tokens. Sign in with /login for this profile to view limits.",
+          );
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {

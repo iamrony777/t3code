@@ -43,6 +43,7 @@ import {
 } from "./claudeUsageLimits.ts";
 import {
   type ClaudeActiveUsageProbeError,
+  isClaudeLongLivedOAuthTokenProfile,
   isClaudeSubscriptionQuotaProfile,
   shouldRunClaudeActiveUsageProbe,
 } from "./ClaudeActiveUsageProbe.ts";
@@ -582,13 +583,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       capabilities.usage?.rate_limits !== undefined &&
       Object.keys(capabilities.usage.rate_limits).length > 0,
   };
+  const usesLongLivedOAuthToken = isClaudeLongLivedOAuthTokenProfile({
+    capabilities: activeProbeCapabilities,
+    environment: resolvedEnvironment,
+  });
   const passiveUnavailable = isClaudeSubscriptionQuotaProfile({
     capabilities: activeProbeCapabilities,
     environment: resolvedEnvironment,
   })
     ? {
         reason: "probeFailed" as const,
-        message: "Claude subscription limits are temporarily unavailable.",
+        message: usesLongLivedOAuthToken
+          ? "Claude does not expose subscription limits to long-lived OAuth tokens. Sign in with /login for this profile to view limits."
+          : "Claude subscription limits are temporarily unavailable.",
       }
     : undefined;
   let usageLimits = !capabilities.usage

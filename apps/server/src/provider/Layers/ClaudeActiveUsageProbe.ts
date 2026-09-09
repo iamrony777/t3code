@@ -106,6 +106,19 @@ function isFirstPartyOAuthToken(tokenSource: string | undefined): boolean {
   );
 }
 
+export function isClaudeLongLivedOAuthTokenProfile(input: {
+  readonly capabilities: ClaudeActiveUsageProbeCapabilities;
+  readonly environment: NodeJS.ProcessEnv;
+}): boolean {
+  const { capabilities, environment } = input;
+  return (
+    capabilities.apiProvider === "firstParty" &&
+    hasEnvironmentValue(environment, "CLAUDE_CODE_OAUTH_TOKEN") &&
+    isFirstPartyOAuthToken(capabilities.tokenSource) &&
+    !API_BILLING_ENVIRONMENT_VARIABLES.some((name) => hasEnvironmentValue(environment, name))
+  );
+}
+
 export function isClaudeSubscriptionQuotaProfile(input: {
   readonly capabilities: ClaudeActiveUsageProbeCapabilities;
   readonly environment: NodeJS.ProcessEnv;
@@ -113,7 +126,7 @@ export function isClaudeSubscriptionQuotaProfile(input: {
   const { capabilities, environment } = input;
   const hasSetupTokenWithoutPlan =
     normalizedMetadata(capabilities.subscriptionType) === undefined &&
-    hasEnvironmentValue(environment, "CLAUDE_CODE_OAUTH_TOKEN");
+    isClaudeLongLivedOAuthTokenProfile(input);
   return (
     capabilities.apiProvider === "firstParty" &&
     (isPaidClaudeSubscription(capabilities.subscriptionType) || hasSetupTokenWithoutPlan) &&
@@ -129,7 +142,9 @@ export function shouldRunClaudeActiveUsageProbe(input: {
 }): boolean {
   const { capabilities, environment } = input;
   return (
-    input.refreshUsageLimits && isClaudeSubscriptionQuotaProfile({ capabilities, environment })
+    input.refreshUsageLimits &&
+    isClaudeSubscriptionQuotaProfile({ capabilities, environment }) &&
+    !isClaudeLongLivedOAuthTokenProfile({ capabilities, environment })
   );
 }
 

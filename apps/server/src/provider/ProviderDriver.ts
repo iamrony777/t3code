@@ -61,7 +61,7 @@ export interface ProviderGlobalOptionMutation {
   readonly value: string | boolean;
 }
 
-export class ProviderGlobalOptionMutationError extends Schema.TaggedErrorClass<ProviderGlobalOptionMutationError>()(
+export class ProviderGlobalOptionMutationError extends Schema.TaggedError<ProviderGlobalOptionMutationError>()(
   "ProviderGlobalOptionMutationError",
   {
     message: Schema.String,

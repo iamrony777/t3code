@@ -417,7 +417,7 @@ export function parseClaudeStatuslineUsage(
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
 
-export class ClaudeActiveUsageProbeError extends Schema.TaggedErrorClass<ClaudeActiveUsageProbeError>()(
+export class ClaudeActiveUsageProbeError extends Schema.TaggedError<ClaudeActiveUsageProbeError>()(
   "ClaudeActiveUsageProbeError",
   {
     reason: Schema.Literals(["spawnFailed", "timedOut", "exited", "invalidCapture"]),

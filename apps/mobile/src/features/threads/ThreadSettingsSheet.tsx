@@ -64,6 +64,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
   createProviderCatalogRefreshRunner,
   providerCatalogRefreshError,
@@ -116,6 +117,8 @@ function ModelRow(props: {
   readonly isFirst: boolean;
   readonly isLast: boolean;
 }) {
+  const { materialYouStyleLayoutActive } = useAppearancePreferences();
+  const selectedMaterialRow = materialYouStyleLayoutActive && props.selected;
   return (
     <Pressable
       accessibilityLabel={[props.option.label, props.option.subtitle].filter(Boolean).join(", ")}
@@ -128,6 +131,7 @@ function ModelRow(props: {
       onPress={props.onPress}
       className={cn(
         "mx-4 min-h-11 flex-row items-center gap-2 bg-card px-4 py-2 active:bg-subtle",
+        selectedMaterialRow && "bg-thread-selected",
         props.isFirst && "rounded-t-2xl",
         props.isLast ? "rounded-b-2xl" : "border-b border-border-subtle",
       )}

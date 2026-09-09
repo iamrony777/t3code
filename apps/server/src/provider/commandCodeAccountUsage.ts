@@ -61,7 +61,7 @@ export interface CommandCodeAccountUsageProbeResult {
   readonly accountLabel?: string;
 }
 
-export class CommandCodeAccountUsageProbeError extends Schema.TaggedErrorClass<CommandCodeAccountUsageProbeError>()(
+export class CommandCodeAccountUsageProbeError extends Schema.TaggedError<CommandCodeAccountUsageProbeError>()(
   "CommandCodeAccountUsageProbeError",
   { reason: Schema.Literals(["readFailed", "fetchFailed", "badResponse"]) },
 ) {}

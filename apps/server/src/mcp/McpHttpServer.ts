@@ -28,6 +28,8 @@ import {
   PreviewSnapshotToolkit,
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
+import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
+import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -437,27 +439,11 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
-/**
- * Effect only implements the 2025-06-18 protocol, and its HTTP transport
- * rejects any request whose `mcp-protocol-version` header names a version it
- * does not know. Clients that negotiate 2025-03-26 — Command Code among them —
- * therefore complete `initialize` and then get a bare 400 on every following
- * request, losing the whole toolkit with nothing to explain why.
- *
- * The two versions differ only in additions (structured tool output, resource
- * links, elicitation) that an older client ignores, so the same adapter serves
- * both; only the advertised version string changes. Listed second so
- * 2025-06-18 stays the default for clients that offer anything else, which
- * keeps every other provider's negotiation byte-for-byte unchanged.
- */
-const v2025_03_26Compat = {
-  ...McpProtocol.v2025_06_18,
-  // `ProtocolAdapter` pins the version to the one adapter Effect ships, so
-  // re-tagging it needs the cast even though the shape is identical.
-  protocolVersion: "2025-03-26",
-} as unknown as McpProtocol.ProtocolAdapter;
+export const mcpProtocols = [McpProtocol.v2025_06_18, McpProtocol.v2025_03_26] as const;
 
-export const mcpProtocols = [McpProtocol.v2025_06_18, v2025_03_26Compat] as const;
+export const PullRequestsToolkitRegistrationLive = McpServer.toolkit(PullRequestsToolkit).pipe(
+  Layer.provide(PullRequestsToolkitHandlersLive),
+);
 
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
@@ -466,4 +452,7 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: mcpProtocols,
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  PullRequestsToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));

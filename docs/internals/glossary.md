@@ -52,3 +52,11 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Federated memory | How T3 Code tells an agent where other harnesses keep memory for the current project. Only paths and update times are shared, never file content.          |
 | Memory source    | A file or folder where another harness keeps memory for one project, anchored to that project's workspace root. A folder of memories counts as one source. |
+
+## Pull requests
+
+| Term                 | Meaning                                                                                                                                                                                  |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pull request link    | A persisted thread association identified by host, repository, and number. Links can cross projects within an environment and carry a server-maintained snapshot.                        |
+| Pull request sync    | The reactor that refreshes each distinct linked review once per cadence and discovers native stack layers. Explicit refreshes and failed stack reads trigger another read.               |
+| Current pull request | The link used by single-review controls and older clients. Open work takes precedence; a completed single chain points at its top layer. Unrelated terminal links use the latest update. |

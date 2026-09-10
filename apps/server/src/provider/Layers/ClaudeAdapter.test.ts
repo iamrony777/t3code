@@ -1,3 +1,4 @@
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -312,8 +313,7 @@ const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
 
-const CLAUDE_RUNTIME_INSTRUCTIONS =
-  "<runtime_info>In case you're asked: you are running in T3 Code through the Claude Code harness. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>";
+const CLAUDE_RUNTIME_INSTRUCTIONS = buildRuntimeInstructions({ harness: "Claude Code" });
 
 describe("buildClaudeSystemPrompt", () => {
   it("keeps the preset with only runtime info when there is no memory context", () => {

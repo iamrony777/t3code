@@ -860,6 +860,7 @@ it.layer(NodeServices.layer)("makeCommandCodeAdapter", (it) => {
           providerInstanceId: instanceId,
           endpoint: "http://127.0.0.1:4123/mcp",
           authorizationHeader: "Bearer token-abc",
+          preview: true,
         });
 
         const adapter = yield* makeCommandCodeAdapter(decodeSettings({ binaryPath }), {

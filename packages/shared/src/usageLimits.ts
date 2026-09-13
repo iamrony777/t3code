@@ -42,6 +42,17 @@ export function providersWithLimits(
   );
 }
 
+export type LimitPresentations = ReadonlyMap<
+  EnvironmentId,
+  {
+    readonly entry: { readonly target: { readonly label: string } };
+    readonly serverConfig: {
+      readonly providers?: readonly ServerProvider[] | undefined;
+      readonly usageLimitSources?: UsageLimitSourceSnapshots | undefined;
+    } | null;
+  }
+>;
+
 export interface LimitsGroup {
   readonly environmentId: EnvironmentId;
   /** Null while only one environment is connected; there is nothing to tell apart. */
@@ -113,17 +124,7 @@ export function collectProviderAccountUsage(
  * Provider snapshots come from the config stream every client already holds,
  * so opening the view costs no extra request.
  */
-export function collectLimitsGroups(
-  presentations: ReadonlyMap<
-    EnvironmentId,
-    {
-      readonly entry: { readonly target: { readonly label: string } };
-      readonly serverConfig: {
-        readonly providers?: readonly ServerProvider[] | undefined;
-      } | null;
-    }
-  >,
-): readonly LimitsGroup[] {
+export function collectLimitsGroups(presentations: LimitPresentations): readonly LimitsGroup[] {
   const groups: LimitsGroup[] = [];
   for (const [environmentId, presentation] of presentations) {
     const providers = providersWithLimits(presentation.serverConfig?.providers ?? []);
@@ -135,23 +136,10 @@ export function collectLimitsGroups(
 
 /**
  * Every usage-limit source across connected environments, keyed so two
- * environments pointing at the same hub still get their own rows. The label
- * carries the environment only when more than one environment has sources.
- * A native provider with usable limits takes precedence over the same account
- * in a source, even when it belongs to another connected environment.
+ * environments pointing at the same hub still get their own rows. Native
+ * provider limits take precedence over the same account from a hub.
  */
-export function collectLimitSources(
-  presentations: ReadonlyMap<
-    EnvironmentId,
-    {
-      readonly entry: { readonly target: { readonly label: string } };
-      readonly serverConfig: {
-        readonly providers?: readonly ServerProvider[] | undefined;
-        readonly usageLimitSources?: UsageLimitSourceSnapshots | undefined;
-      } | null;
-    }
-  >,
-): ReadonlyArray<
+export function collectLimitSources(presentations: LimitPresentations): ReadonlyArray<
   UsageLimitSourceSnapshot & {
     readonly key: string;
     readonly environmentId: EnvironmentId;
@@ -249,9 +237,7 @@ export interface LimitAccount {
  * entry per distinct account. The freshest reads supply windows and credits;
  * native instances supply names and environment labels.
  */
-export function collectLimitAccounts(
-  presentations: Parameters<typeof collectLimitSources>[0],
-): readonly LimitAccount[] {
+export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
@@ -385,9 +371,7 @@ export function collectLimitAccounts(
  * provider whose probe failed, or an account without subscription limits.
  * The environment is named only when more than one is connected.
  */
-export function collectLimitNotices(
-  presentations: Parameters<typeof collectLimitSources>[0],
-): readonly string[] {
+export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
   const label = (environmentLabel: string, subject: string) =>
     presentations.size > 1 ? `${environmentLabel} · ${subject}` : subject;
   const notices: string[] = [];

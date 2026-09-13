@@ -16,6 +16,7 @@ import * as NodeOS from "node:os";
 
 import {
   ClaudeSettings,
+  CodexSettings,
   OpenCodeSettings,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -106,6 +107,7 @@ const encodeRatesCache = Schema.encodeEffect(
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown as unknown as Schema.Codec<unknown>);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
+const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeOpenCodeSettings = Schema.decodeUnknownOption(OpenCodeSettings);
 
@@ -323,6 +325,79 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const resolveCodexTranscriptDirs = Effect.fn("UsageService.resolveCodexTranscriptDirs")(
+    function* (providerInstances: ProviderInstanceConfigMap) {
+      const instances = Object.entries(providerInstances)
+        .filter(([, instance]) => instance.driver === "codex")
+        .sort(compareInstanceIds);
+      const dirs: TranscriptDir[] = [];
+
+      for (const [instanceId, instance] of instances) {
+        const decoded = decodeCodexSettings(instance.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+        const environmentHome = environment.CODEX_HOME?.trim();
+        const config = decoded.value;
+        const layout = yield* resolveCodexHomeLayout(
+          !config.homePath.trim() && !config.shadowHomePath.trim() && environmentHome
+            ? { ...config, homePath: environmentHome }
+            : config,
+        );
+        dirs.push({
+          provider: "codex",
+          dir: path.join(layout.sharedHomePath, "sessions"),
+          sourceId: UsageSourceId.make(instanceId),
+          profile: {
+            instanceId: ProviderInstanceId.make(instanceId),
+            ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+            ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+          },
+        });
+      }
+
+      return dirs;
+    },
+  );
+
+  const resolveGrokTranscriptDirs = (
+    providerInstances: ProviderInstanceConfigMap,
+  ): readonly TranscriptDir[] => {
+    const instances = Object.entries(providerInstances)
+      .filter(([, instance]) => instance.driver === "grok")
+      .sort(compareInstanceIds);
+    if (instances.length === 0) {
+      return [
+        {
+          provider: "grok",
+          dir: path.join(
+            expandHomePath(
+              hostEnvironment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
+            ),
+            "sessions",
+          ),
+          fileName: "updates.jsonl",
+        },
+      ];
+    }
+    return instances.map(([instanceId, instance]) => {
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+      const grokHome = expandHomePath(
+        environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
+      );
+      return {
+        provider: "grok" as const,
+        dir: path.join(grokHome, "sessions"),
+        fileName: "updates.jsonl",
+        sourceId: UsageSourceId.make(instanceId),
+        profile: {
+          instanceId: ProviderInstanceId.make(instanceId),
+          ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+          ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+        },
+      };
+    });
+  };
+
   const resolveOpenCodeTranscriptDirs = (
     providerInstances: ProviderInstanceConfigMap,
   ): readonly TranscriptDir[] => {
@@ -428,24 +503,10 @@ export const make = Effect.gen(function* () {
   ) {
     const providerInstances = deriveProviderInstanceConfigMap(settings);
     const claudeDirs = yield* resolveClaudeTranscriptDirs(providerInstances);
-    const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
-    // Grok Settings only expose the binary path; home is `$GROK_HOME` or `~/.grok`.
-    // Empty/whitespace GROK_HOME must fall back: coalescing alone would scan cwd.
-    const grokHomeEnv = hostEnvironment["GROK_HOME"]?.trim() ?? "";
-    const grokHome =
-      grokHomeEnv.length > 0
-        ? path.resolve(expandHomePath(grokHomeEnv))
-        : path.join(NodeOS.homedir(), ".grok");
+    const codexDirs = yield* resolveCodexTranscriptDirs(providerInstances);
+    const grokDirs = resolveGrokTranscriptDirs(providerInstances);
 
-    const dirs: TranscriptDir[] = [
-      ...claudeDirs,
-      { provider: "codex", dir: path.join(codexLayout.sharedHomePath, "sessions") },
-      {
-        provider: "grok",
-        dir: path.join(grokHome, "sessions"),
-        fileName: "updates.jsonl",
-      },
-    ];
+    const dirs: TranscriptDir[] = [...claudeDirs, ...codexDirs, ...grokDirs];
 
     dirs.push(...resolveCommandCodeTranscriptDirs(providerInstances));
     dirs.push(...resolveOpenCodeTranscriptDirs(providerInstances));

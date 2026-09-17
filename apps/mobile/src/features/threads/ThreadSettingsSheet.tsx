@@ -43,6 +43,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
+import { MaterialButton } from "../../components/MaterialButton";
+import { MaterialIconButton } from "../../components/MaterialIconButton";
+import { MaterialRadioIndicator } from "../../components/MaterialRadioIndicator";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { cn } from "../../lib/cn";
@@ -64,7 +67,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { useSetProviderGlobalOption } from "./use-set-provider-global-option";
-import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { MaterialScreenContent } from "../../components/MaterialScreenContent";
 import {
   createProviderCatalogRefreshRunner,
   providerCatalogRefreshError,
@@ -117,8 +120,7 @@ function ModelRow(props: {
   readonly isFirst: boolean;
   readonly isLast: boolean;
 }) {
-  const { materialYouStyleLayoutActive } = useAppearancePreferences();
-  const selectedMaterialRow = materialYouStyleLayoutActive && props.selected;
+  const selectedMaterialRow = Platform.OS === "android" && props.selected;
   return (
     <Pressable
       accessibilityLabel={[props.option.label, props.option.subtitle].filter(Boolean).join(", ")}
@@ -129,6 +131,7 @@ function ModelRow(props: {
       }}
       disabled={props.option.isUnavailable}
       onPress={props.onPress}
+      style={Platform.OS === "android" ? { minHeight: 56, paddingVertical: 12 } : undefined}
       className={cn(
         "mx-4 min-h-11 flex-row items-center gap-2 bg-card px-4 py-2 active:bg-subtle",
         selectedMaterialRow && "bg-thread-selected",
@@ -136,11 +139,12 @@ function ModelRow(props: {
         props.isLast ? "rounded-b-2xl" : "border-b border-border-subtle",
       )}
     >
+      {Platform.OS === "android" ? <MaterialRadioIndicator selected={props.selected} /> : null}
       <View className="min-w-0 flex-1">
         <View className="flex-row items-center gap-2">
           <Text
             className="min-w-0 shrink text-base font-t3-medium text-foreground"
-            numberOfLines={1}
+            numberOfLines={Platform.OS === "android" ? 2 : 1}
           >
             {props.option.label}
           </Text>
@@ -159,16 +163,19 @@ function ModelRow(props: {
           ) : null}
         </View>
         {props.option.subtitle ? (
-          <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+          <Text
+            className="text-xs text-foreground-muted"
+            numberOfLines={Platform.OS === "android" ? 2 : 1}
+          >
             {props.option.subtitle}
           </Text>
         ) : null}
       </View>
-      {props.selected ? (
+      {props.selected && Platform.OS !== "android" ? (
         <SymbolView
           name="checkmark"
           size={16}
-          tintColorClassName={"accent-icon"}
+          tintColorClassName="accent-icon"
           type="monochrome"
           weight="semibold"
         />
@@ -201,7 +208,7 @@ function ProviderHeader(props: {
           <SymbolView
             name={props.collapsed ? "chevron.down" : "chevron.up"}
             size={12}
-            tintColorClassName={"accent-icon-subtle"}
+            tintColorClassName="accent-icon-subtle"
             type="monochrome"
           />
         </>
@@ -217,6 +224,7 @@ function ProviderHeader(props: {
         accessibilityState={{ expanded: !props.collapsed }}
         className="mx-4 mt-1 min-h-11 flex-row items-center gap-2 rounded-xl px-1 pt-2 active:opacity-60"
         onPress={props.onToggle}
+        style={Platform.OS === "android" ? { minHeight: 48 } : undefined}
       >
         {content}
       </Pressable>
@@ -243,6 +251,7 @@ function DisclosureRow(props: {
       accessibilityRole="button"
       disabled={props.disabled}
       onPress={props.onPress}
+      style={Platform.OS === "android" ? { minHeight: 56 } : undefined}
       className={cn(
         "min-h-11 flex-row items-center gap-2 bg-card px-4 py-2 active:bg-subtle",
         props.disabled && "opacity-50",
@@ -259,7 +268,7 @@ function DisclosureRow(props: {
       <SymbolView
         name="chevron.right"
         size={12}
-        tintColorClassName={"accent-icon-subtle"}
+        tintColorClassName="accent-icon-subtle"
         type="monochrome"
       />
     </Pressable>
@@ -280,22 +289,24 @@ function ChoiceRow(props: {
       accessibilityRole="radio"
       accessibilityState={{ checked: props.selected }}
       onPress={props.onPress}
+      style={Platform.OS === "android" ? { minHeight: 56 } : undefined}
       className={cn(
         "min-h-14 flex-row items-center gap-3 bg-card px-4 py-3 active:bg-subtle",
         !props.isLast && "border-b border-border-subtle",
       )}
     >
+      {Platform.OS === "android" ? <MaterialRadioIndicator selected={props.selected} /> : null}
       <View className="min-w-0 flex-1 gap-0.5">
         <Text className="text-base font-t3-medium text-foreground">{props.label}</Text>
         {props.description ? (
           <Text className="text-sm leading-5 text-foreground-muted">{props.description}</Text>
         ) : null}
       </View>
-      {props.selected ? (
+      {props.selected && Platform.OS !== "android" ? (
         <SymbolView
           name="checkmark"
           size={16}
-          tintColorClassName={"accent-icon"}
+          tintColorClassName="accent-icon"
           type="monochrome"
           weight="semibold"
         />
@@ -958,10 +969,15 @@ function ThreadSettingsMainContent(props: {
     <AnimatedLegendList
       automaticallyAdjustsScrollIndicatorInsets
       className="flex-1 bg-sheet"
+      style={
+        Platform.OS === "android"
+          ? { width: "100%", maxWidth: 720, alignSelf: "center" }
+          : undefined
+      }
       contentContainerStyle={{ paddingTop: 4 }}
       contentInsetAdjustmentBehavior={usesTransparentNativeHeader ? "never" : "automatic"}
       data={listItems}
-      estimatedItemSize={48}
+      estimatedItemSize={Platform.OS === "android" ? 56 : 48}
       extraData={animationsReady}
       getItemType={(item) => item.kind}
       itemLayoutAnimation={THREAD_SETTINGS_CATALOG_LAYOUT_TRANSITION}
@@ -974,16 +990,39 @@ function ThreadSettingsMainContent(props: {
           {usesTransparentNativeHeader ? <View style={{ height: nativeHeaderHeight }} /> : null}
           {Platform.OS === "android" ? (
             <View className="px-4 pb-2 pt-3">
-              <TextInput
-                accessibilityLabel="Find a model"
-                autoCapitalize="none"
-                autoCorrect={false}
-                className="h-11 rounded-xl bg-card px-4 text-base text-foreground"
-                onChangeText={session.setSearchQuery}
-                placeholder="Find a model"
-                placeholderTextColorClassName="accent-placeholder"
-                value={session.searchQuery}
-              />
+              <View
+                className="flex-row items-center rounded-full bg-input px-2"
+                style={{ minHeight: 56 }}
+              >
+                <View pointerEvents="none" className="px-2">
+                  <SymbolView
+                    name="magnifyingglass"
+                    size={24}
+                    tintColorClassName="accent-icon-subtle"
+                  />
+                </View>
+                <TextInput
+                  accessibilityLabel="Find a model"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className="min-w-0 flex-1 px-2 py-0 text-base text-foreground"
+                  style={{ minHeight: 56, includeFontPadding: false, textAlignVertical: "center" }}
+                  onChangeText={session.setSearchQuery}
+                  placeholder="Find a model"
+                  placeholderTextColorClassName="accent-placeholder"
+                  selectionColorClassName="accent-primary/32"
+                  cursorColorClassName="accent-primary"
+                  selectionHandleColorClassName="accent-primary"
+                  value={session.searchQuery}
+                />
+                {session.searchQuery.length > 0 ? (
+                  <MaterialIconButton
+                    accessibilityLabel="Clear model search"
+                    icon="xmark"
+                    onPress={() => session.setSearchQuery("")}
+                  />
+                ) : null}
+              </View>
             </View>
           ) : null}
         </>
@@ -1071,6 +1110,11 @@ function ThreadSettingsChoiceContent(props: {
   return (
     <ScrollView
       className="flex-1 bg-sheet"
+      style={
+        Platform.OS === "android"
+          ? { width: "100%", maxWidth: 720, alignSelf: "center" }
+          : undefined
+      }
       contentContainerStyle={{
         paddingBottom: insets.bottom + 12,
         paddingHorizontal: 16,
@@ -1194,14 +1238,15 @@ function ThreadSettingsModelsScreen() {
               icon: "arrow.clockwise",
               onPress: refreshProviders,
             },
-            {
-              accessibilityLabel: session.pendingModel ? "Save thread settings" : "Done",
-              icon: "checkmark",
-              onPress: commitAndClose,
-            },
           ]}
+          trailing={
+            session.pendingModel ? (
+              <MaterialButton label="Save" tone="text" onPress={commitAndClose} />
+            ) : undefined
+          }
           onBack={presentation.onClose}
           title="Thread settings"
+          hideBottomBorder
         />
       ) : null}
       <NativeStackScreenOptions
@@ -1240,19 +1285,22 @@ function ThreadSettingsModelsScreen() {
               : undefined,
         }}
       />
-      <ThreadSettingsMainContent
-        onOpenSubmenu={(submenu) => {
-          const title =
-            submenu.kind === "runtime"
-              ? "Runtime"
-              : ((submenu.kind === "global-descriptor"
-                  ? session.globalOptions
-                  : session.displayedDescriptors
-                ).find((descriptor) => descriptor.type === "select" && descriptor.id === submenu.id)
-                  ?.label ?? "Option");
-          navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
-        }}
-      />
+      <MaterialScreenContent>
+        <ThreadSettingsMainContent
+          onOpenSubmenu={(submenu) => {
+            const title =
+              submenu.kind === "runtime"
+                ? "Runtime"
+                : ((submenu.kind === "global-descriptor"
+                    ? session.globalOptions
+                    : session.displayedDescriptors
+                  ).find(
+                    (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
+                  )?.label ?? "Option");
+            navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
+          }}
+        />
+      </MaterialScreenContent>
       <NativeHeaderToolbar placement="left">
         <NativeHeaderToolbar.Button
           accessibilityLabel="Cancel thread settings"
@@ -1327,9 +1375,18 @@ function ThreadSettingsChoiceScreen() {
     <>
       <NativeStackScreenOptions options={{ headerShown: Platform.OS !== "android" }} />
       {Platform.OS === "android" ? (
-        <AndroidScreenHeader title={route.params.title} onBack={() => navigation.goBack()} />
+        <AndroidScreenHeader
+          title={route.params.title}
+          onBack={() => navigation.goBack()}
+          hideBottomBorder
+        />
       ) : null}
-      <ThreadSettingsChoiceContent submenu={route.params} onSelected={() => navigation.goBack()} />
+      <MaterialScreenContent>
+        <ThreadSettingsChoiceContent
+          submenu={route.params}
+          onSelected={() => navigation.goBack()}
+        />
+      </MaterialScreenContent>
     </>
   );
 }
@@ -1350,11 +1407,12 @@ function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) 
       <ThreadSettingsPickerStack.Navigator
         initialRouteName="ThreadSettingsModels"
         screenOptions={{
-          animation: "slide_from_right",
+          animation: Platform.OS === "android" ? "default" : "slide_from_right",
           contentStyle: { backgroundColor: solidSheetBackground },
           gestureEnabled: true,
           headerBackButtonDisplayMode: "minimal",
           headerBackTitle: "",
+          headerShown: Platform.OS !== "android",
           headerShadowVisible: false,
           headerStyle: {
             backgroundColor: NATIVE_LIQUID_GLASS_SUPPORTED ? "transparent" : solidSheetBackground,

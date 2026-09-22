@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type UsageLimitSourceAccount,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -1055,6 +1056,7 @@ describe("pooled account columns", () => {
     driver: ProviderDriverKind.make("claudeAgent"),
     displayName: key,
     email: undefined,
+    accountLabel: undefined,
     plan: undefined,
     accentColor: undefined,
     environments: [],

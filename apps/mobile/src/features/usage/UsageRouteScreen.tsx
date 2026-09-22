@@ -414,7 +414,7 @@ function ProviderSection(props: {
   );
 
   return (
-    <SettingsSection title="Providers" card>
+    <SettingsSection title="Providers">
       {ordered.map((provider, index) => {
         const share = metric === "cost" ? provider.costShare : provider.tokenShare;
         return (
@@ -467,7 +467,7 @@ function ProfilesSection(props: { readonly merged: MergedUsage }) {
   if (props.merged.profiles.length === 0) return null;
 
   return (
-    <SettingsSection title="Profiles" card>
+    <SettingsSection title="Profiles">
       {props.merged.costQuality.unpricedShare > 0 ? (
         <Text className="px-4 pt-4 text-xs text-foreground-muted">
           Some historical records are unpriced and excluded from cost.
@@ -526,7 +526,7 @@ function TotalsSection(props: { readonly merged: MergedUsage; readonly isPast24H
   const cachedShare = observedInput === 0 ? 0 : merged.cachedInputTokens / observedInput;
 
   return (
-    <SettingsSection title="Totals" card>
+    <SettingsSection title="Totals">
       <View className="flex-row flex-wrap">
         <MetricCell
           label="Processed tokens"
@@ -587,7 +587,7 @@ function ModelsSection(props: { readonly merged: MergedUsage }) {
   if (merged.models.length === 0) return null;
 
   return (
-    <SettingsSection title="By model" card>
+    <SettingsSection title="By model">
       {merged.models.map((model, index) => (
         <View
           key={`${model.provider}:${model.model}`}

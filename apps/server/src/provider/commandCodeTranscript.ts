@@ -152,7 +152,7 @@ export const makeCommandCodeTranscriptReader = Effect.fn("makeCommandCodeTranscr
           const bytesToRead = info.size > maxBytes ? maxBytes : info.size;
           const offset = info.size - bytesToRead;
           yield* file.seek(offset, "start");
-          const bytes = Option.getOrUndefined(yield* file.readAlloc(bytesToRead));
+          const bytes = Option.getOrUndefined(yield* file.readAlloc(Number(bytesToRead)));
           return bytes === undefined
             ? undefined
             : parseCommandCodeTranscriptTail(bytes, offset === 0n);

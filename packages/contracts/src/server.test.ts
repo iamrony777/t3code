@@ -7,6 +7,7 @@ import {
   ProviderGlobalOption,
   resolveEnvironmentMachineKind,
   ServerConfig,
+  ServerObservability,
   ServerProvider,
   ServerProviderGlobalOptionSetError,
   ServerProviderGlobalOptionSetInput,
@@ -20,6 +21,7 @@ const decodeProviderGlobalOption = Schema.decodeUnknownSync(ProviderGlobalOption
 const decodeServerProviderGlobalOptionSetInput = (input: unknown) =>
   Schema.decodeUnknownSync(ServerProviderGlobalOptionSetInput)(input);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
+const decodeServerObservability = Schema.decodeUnknownSync(ServerObservability);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
 
@@ -373,6 +375,21 @@ describe("server config forward compatibility", () => {
     expect(parsed.usageLimits?.windows).toEqual([
       { id: "primary", kind: "session", label: "Session", usedPercent: 12 },
     ]);
+  });
+});
+
+describe("ServerObservability", () => {
+  it("reads a server from before the log signal as exporting no logs", () => {
+    const parsed = decodeServerObservability({
+      logsDirectoryPath: "/tmp/t3/logs",
+      localTracingEnabled: true,
+      otlpTracesUrl: "https://collector.example.com/v1/traces",
+      otlpTracesEnabled: true,
+      otlpMetricsEnabled: false,
+    });
+
+    expect(parsed.otlpLogsEnabled).toBe(false);
+    expect(parsed.otlpLogsUrl).toBeUndefined();
   });
 });
 

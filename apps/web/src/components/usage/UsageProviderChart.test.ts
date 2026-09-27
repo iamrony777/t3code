@@ -90,6 +90,9 @@ describe("buildPeriodColumns", () => {
       { provider: "claude", value: 20 },
       { provider: "commandcode", value: 0 },
       { provider: "grok", value: 0 },
+      { provider: "cursor", value: 0 },
+      { provider: "opencode", value: 0 },
+      { provider: "antigravity", value: 0 },
     ]);
   });
 

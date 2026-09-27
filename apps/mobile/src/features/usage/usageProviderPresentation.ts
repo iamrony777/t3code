@@ -6,6 +6,8 @@ export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
   "commandcode",
   "opencode",
   "grok",
+  "cursor",
+  "antigravity",
 ];
 
 export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
@@ -14,6 +16,8 @@ export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   commandcode: "Command Code",
   opencode: "OpenCode",
   grok: "Grok Build",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
 };
 
 export function providerColorsForScheme(
@@ -25,5 +29,7 @@ export function providerColorsForScheme(
     commandcode: scheme === "dark" ? "#a78bfa" : "#7c3aed",
     opencode: scheme === "dark" ? "#34d399" : "#059669",
     grok: scheme === "dark" ? "#a1a1aa" : "#52525b",
+    cursor: "#8b8b8b",
+    antigravity: "#8c7bd1",
   };
 }

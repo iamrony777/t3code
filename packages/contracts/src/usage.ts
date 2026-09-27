@@ -1,11 +1,8 @@
 /**
  * Usage reporting contract.
  *
- * Each environment scans the provider CLIs' own on-disk session transcripts
- * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`,
- * `~/.grok/sessions/**\/updates.jsonl`) rather than relying on T3 Code's own
- * orchestration projections, so usage stays complete even for turns that were
- * never driven through T3 Code. This mirrors the approach `ccusage` takes.
+ * Each environment scans native session files and databases, including work
+ * driven outside T3 Code. Source status describes gaps in local coverage.
  *
  * Environments return pre-aggregated
  * `(day, hourStart?, provider, sourceId?, model)` buckets. Raw transcript
@@ -49,7 +46,9 @@ export const UsageProviderKind = Schema.Literals([
   "codex",
   "grok",
   "commandcode",
+  "cursor",
   "opencode",
+  "antigravity",
 ]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
@@ -126,6 +125,8 @@ export const UsageBucket = Schema.Struct({
   /** Links this bucket to one entry in `UsageSummary.sources` when available. */
   sourceId: Schema.optional(UsageSourceId),
   model: TrimmedNonEmptyString,
+  /** Source directory, so overlapping multi-home environments merge once per source. */
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
   totals: UsageTokenTotals,
   costUsd: Schema.Number,
   /**
@@ -187,6 +188,8 @@ export const UsageSource = Schema.Struct({
    */
   distinctSessions: NonNegativeInt,
   message: Schema.NullOr(TrimmedNonEmptyString),
+  /** An action the client can offer to make this source available. */
+  action: Schema.optionalKey(Schema.Literal("enableCursorKeychain")),
 });
 export type UsageSource = typeof UsageSource.Type;
 

@@ -369,6 +369,7 @@ describe("parseOpenCodeLine", () => {
   it("extracts provider-qualified model, native cost, and token classes", () => {
     expect(parseOpenCodeLine(message())).toEqual({
       provider: "opencode",
+      fast: false,
       timestampMs: 1_786_010_400_000,
       model: "deepseek/deepseek-v4-flash",
       sessionId: "ses_456",

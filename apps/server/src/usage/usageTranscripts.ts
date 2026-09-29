@@ -118,6 +118,10 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   } catch {
     return null;
   }
+  return parseClaudeRecord(parsed);
+}
+
+export function parseClaudeRecord(parsed: unknown): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -296,6 +300,10 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
   } catch {
     return null;
   }
+  return parseCodexRecord(parsed, state);
+}
+
+export function parseCodexRecord(parsed: unknown, state: CodexScanState): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -432,6 +440,10 @@ export function parseCommandCodeLine(line: string, sessionId: string): UsageReco
   } catch {
     return null;
   }
+  return parseCommandCodeRecord(parsed, sessionId);
+}
+
+export function parseCommandCodeRecord(parsed: unknown, sessionId: string): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -538,6 +550,10 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
   } catch {
     return [];
   }
+  return parseGrokRecord(parsed);
+}
+
+export function parseGrokRecord(parsed: unknown): readonly UsageRecord[] {
   if (typeof parsed !== "object" || parsed === null) return [];
 
   const record = parsed as Record<string, unknown>;

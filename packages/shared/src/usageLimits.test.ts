@@ -2,6 +2,8 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  EventId,
+  type OrchestrationThreadActivity,
   type ServerProvider,
   type UsageLimitSourceAccount,
   UsageLimitSourceId,
@@ -18,6 +20,7 @@ import {
   collectLimitSources,
   collectLimitsGroups,
   collectProviderAccountUsage,
+  collectExternalUsageLinks,
   accountUsageCreditSummary,
   accountUsageUnavailableMessage,
   collectLimitNotices,
@@ -29,6 +32,8 @@ import {
   paceOf,
   providersWithLimits,
   remainingPercent,
+  isChatGptUsageLimitError,
+  usesChatGptSharing,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -415,6 +420,58 @@ describe("collectLimitSources", () => {
   });
 });
 describe("pools", () => {
+  it("merges OpenCode Go limits from machines with the same API key", () => {
+    const go = provider({
+      driver: ProviderDriverKind.make("opencode"),
+      instanceId: ProviderInstanceId.make("opencode"),
+      auth: { status: "authenticated" },
+      usageLimits: {
+        checkedAt,
+        credentialFingerprint: "shared-go-key",
+        windows: [{ ...window, id: "go_rolling", usedPercent: 3 }],
+      },
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [go] } }],
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          serverConfig: {
+            providers: [
+              {
+                ...go,
+                usageLimits: {
+                  ...go.usageLimits!,
+                  checkedAt: "2026-09-03T11:30:00.000Z",
+                  windows: [{ ...window, id: "go_rolling", usedPercent: 4 }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.environments).toEqual([
+      { environmentId: "env-a", label: "Laptop" },
+      { environmentId: "env-b", label: "Desktop" },
+    ]);
+    expect(collectLimitPools(accounts, now)[0]?.windows[0]?.members).toHaveLength(1);
+    expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(4);
+
+    const differentKey = {
+      ...go,
+      usageLimits: { ...go.usageLimits!, credentialFingerprint: "other-go-key" },
+    };
+    input.set(EnvironmentId.make("env-b"), {
+      entry: { target: { label: "Desktop" } },
+      serverConfig: { providers: [differentKey] },
+    });
+    expect(collectLimitAccounts(input)).toHaveLength(2);
+  });
+
   const checkedAt = "2026-09-03T11:00:00.000Z";
   const weekly = {
     id: "seven_day",
@@ -1521,5 +1578,60 @@ describe("isUsageLimitsCommand", () => {
     expect(isUsageLimitsCommand("/usage-limits explain")).toBe(false);
     expect(isUsageLimitsCommand("Explain /usage-limits")).toBe(false);
     expect(isUsageLimitsCommand("/usage")).toBe(false);
+  });
+});
+
+describe("external usage and ChatGPT sharing", () => {
+  it("deduplicates external usage destinations without inventing quota pools", () => {
+    const managed = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [],
+        unavailable: { reason: "unsupported", message: "Track usage in ChatGPT." },
+        externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
+      },
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        {
+          entry: { target: { label: "A" } },
+          serverConfig: {
+            providers: [managed, { ...managed, instanceId: ProviderInstanceId.make("personal") }],
+          },
+        },
+      ],
+      [
+        EnvironmentId.make("b"),
+        { entry: { target: { label: "B" } }, serverConfig: { providers: [managed] } },
+      ],
+    ]);
+    expect(collectExternalUsageLinks(presentations)).toEqual([
+      {
+        ...managed.usageLimits!.externalUsage,
+        message: "Track usage in ChatGPT.",
+        accounts: [`${managed.instanceId} on A`, "personal on A", `${managed.instanceId} on B`],
+      },
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+  });
+
+  it("requires verified ChatGPT sharing metadata and a matching current limit error", () => {
+    const codex = provider({ auth: { status: "authenticated", type: "chatgpt" } });
+    expect(usesChatGptSharing(codex)).toBe(false);
+    expect(
+      usesChatGptSharing({ ...codex, auth: { ...codex.auth, subscriptionSharing: true } }),
+    ).toBe(true);
+    const limit: OrchestrationThreadActivity = {
+      id: EventId.make("sharing-limit"),
+      tone: "error",
+      kind: "runtime.error",
+      summary: "Runtime error",
+      turnId: null,
+      createdAt: "2026-09-03T12:00:00.000Z",
+      payload: { code: "subscription_sharing_usage_limit_exceeded", message: "Limit reached" },
+    };
+    expect(isChatGptUsageLimitError([limit], "Limit reached")).toBe(true);
+    expect(isChatGptUsageLimitError([limit], "A different failure")).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
 import { EnvironmentId, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { type RouteProp, useIsFocused, useNavigation, useRoute } from "@react-navigation/native";
@@ -322,6 +323,13 @@ export function UsageRouteScreen() {
                 merged={merged}
                 isPartial={isPartial}
               />
+              <ChatGptUsageSummary selectedEnvironmentIds={selectedEnvironmentIds} />
+              {merged.duplicateSources.length > 0 ? (
+                <Text className="text-sm text-foreground-muted">
+                  Counted once across environments sharing a transcript directory:{" "}
+                  {merged.duplicateSources.join(", ")}
+                </Text>
+              ) : null}
               {isPending ? (
                 <Text className="py-16 text-center text-base text-foreground-muted">
                   Scanning provider transcripts…
